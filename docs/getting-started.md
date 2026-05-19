@@ -18,8 +18,8 @@ Before you begin, ensure you have the following installed on your system:
 
 1. **Clone the Repository:**
    ```bash
-   git clone https://github.com/orama-interactive/pix-MCP.git
-   cd pix-MCP
+   git clone https://github.com/abidoo22/Pixelorama-MCP.git
+   cd Pixelorama-MCP
    ```
 
 2. **Install and Build Server Dependencies:**

@@ -27,7 +27,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/pix-MCP.git"
+    "url": "git+https://github.com/abidoo22/Pixelorama-MCP.git"
   },
   "engines": {
     "node": ">=18"

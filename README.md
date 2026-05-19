@@ -45,8 +45,8 @@ AI Client (Claude / Cursor / etc.)
 ### 1. Install the MCP server
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pix-MCP.git
-cd pix-MCP/mcp-server
+git clone https://github.com/abidoo22/Pixelorama-MCP.git
+cd Pixelorama-MCP/mcp-server
 npm install
 npm run build
 ```
