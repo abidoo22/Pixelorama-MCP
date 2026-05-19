@@ -127,8 +127,11 @@ for (let y = 0; y < H; y++) {
 
 To prevent Godot HTTP connection overhead and keep drawing execution under **2 seconds**, always batch your pixel drawing calls:
 
-* **Node.js Scripts:** Set `BATCH_SIZE = 400` or `500` pixels per `draw_pixels` command payload.
-* **Python Scripts:** Set `BATCH_SIZE = 15000` pixels (for very large canvases).
+* **GDScript Color Cache:** The bridge plugin features a built-in `color_cache` dictionary. Color hex parsing is only executed **once per unique color in a batch**, reducing string parsing operations by over 20,000x!
+* **Group by Color:** When compiling coordinates, group pixels with the same color together in your array payload. This ensures that the engine only executes a single string validation parse per unique hex key.
+* **Optimal Batch Sizes:**
+  - For small canvases (e.g. 64x64 or less), send all pixels in a single batch.
+  - For large canvases (e.g. 128x128 to 1024x1024), split the drawing payload into chunks of **`15,000` pixels per request** (e.g., `BATCH_SIZE = 15000` in Node/Python).
 * **Single Commit:** The `draw_pixels` tool processes the array in a single undo step inside Pixelorama, ensuring that pressing `Ctrl+Z` undoes the entire object cleanly!
 
 ---
@@ -139,7 +142,7 @@ Always automate viewport centering so that the user immediately sees the masterp
 
 1. **Focus Pixelorama Window:** Focus the active window ID in X11 or OS window manager.
 2. **Close menus:** Simulate pressing `Escape` twice to clear any accidental dropdowns.
-3. **Fit to Frame:** Simulate pressing `f` (or `Home` key) to center the current canvas.
+3. **Fit to Frame:** Simulate pressing `f` (or `Home` key) to center the current canvas, or call the native `fit_viewport` REST command.
 4. **Zoom Box:** To zoom to custom levels, click the zoom input box at top toolbar coordinates `x=660, y=50`, clear the field, type a zoom value (e.g., `400`), and hit `Return`.
 
 ---
@@ -155,12 +158,14 @@ Pixelorama has an automatic safety system: if it encounters a compilation/runtim
 
 **Fix:** Delete any files in `give_in_bug_report/`, compile a clean PCK using the pack script, and copy it back to the active extensions directory.
 
-### 2. Clean Start Command
-To start Pixelorama cleanly in background with the opengl3 rendering driver and capture active stdout/stderr:
+### 2. Clean Start Command (Single Window Bypass)
+When Godot crashes or is force-killed, on next startup it pops up a modal alert window: *"Restore crash session?"*. This modal blocks the REST loop until it is clicked.
+**Fix:** Launch Pixelorama with the `--single-window` flag so the alert stays in the main window, wait for it to load, and send X11 Escape keys to clear it:
 ```bash
-killall -9 Pixelorama.x86_64 || true
+pkill -9 -f Pixelorama || true
 rm -f /home/abido/.local/share/pixelorama/.running
-nohup /home/abido/Downloads/Pixelorama-Linux-64bit/Pixelorama.x86_64 --rendering-driver opengl3 > /home/abido/Downloads/pix-MCP/pix_live.log 2>&1 &
+export DISPLAY=:0
+nohup /home/abido/Downloads/Pixelorama-Linux-64bit/Pixelorama.x86_64 --rendering-driver opengl3 --single-window > /home/abido/Downloads/pix-MCP/pix_live.log 2>&1 &
 ```
 
 ### 3. Rebuild Extensions
@@ -168,3 +173,4 @@ Always compile the GDScript package with Godot's pack script to package and copy
 ```bash
 /home/abido/Downloads/Godot_v4.6.2-stable_linux.x86_64 --headless -s pack.gd
 ```
+

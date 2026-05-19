@@ -324,7 +324,7 @@ func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
 func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 	## Batch draw multiple pixels in a single undo-able operation.
 	## Expects "pixels" as an array of {"x": int, "y": int, "color": "#hex"} objects.
-	## Much faster than calling draw_pixel repeatedly.
+	## Optimized with color caching to avoid redundant string parsing in the loop.
 	var pixels: Array = params.get("pixels", [])
 	if pixels.is_empty():
 		return {"success": false, "error": "Missing or empty 'pixels' array"}
@@ -338,6 +338,8 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 	var drawn := 0
 	var skipped := 0
 
+	var color_cache := {}
+
 	for pixel in pixels:
 		if not pixel is Dictionary:
 			skipped += 1
@@ -347,7 +349,15 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 		if x < 0 or x >= w or y < 0 or y >= h:
 			skipped += 1
 			continue
-		var color := _parse_color(pixel)
+		
+		var color_str: String = pixel.get("color", "")
+		var color: Color
+		if color_cache.has(color_str):
+			color = color_cache[color_str]
+		else:
+			color = _parse_color(pixel)
+			color_cache[color_str] = color
+			
 		image.set_pixel(x, y, color)
 		drawn += 1
 

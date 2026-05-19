@@ -25,3 +25,7 @@ npm-debug.log*
 # Godot
 .godot/
 *.import
+
+# Scratch and Temporary files
+scratch/
+

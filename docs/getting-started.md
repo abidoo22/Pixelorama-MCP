@@ -109,3 +109,44 @@ Once connected, start a new chat session with your AI assistant and send a drawi
 3. Compute the drop shadow offset.
 4. Draw the outline and details in high-performance pixel batches via `draw_pixels`.
 5. Focus and center the screen so you can inspect your brand-new sprite instantly!
+
+---
+
+## ⚡ High-Speed Drawing & Manual Custom Scripts
+
+### A. How to Run & Draw Scripts Manually (For Humans)
+If you want to write or execute a `.js` drawing script yourself instead of asking an AI client, follow these steps:
+
+1. **Make sure Pixelorama is open:**
+   Launch it in single-window mode to cleanly handle active popups:
+   ```bash
+   /home/abido/Downloads/Pixelorama-Linux-64bit/Pixelorama.x86_64 --rendering-driver opengl3 --single-window &
+   ```
+
+2. **Run the script using Node.js:**
+   Use node to execute any script in the `docs/examples/` folder directly:
+   ```bash
+   node docs/examples/draw_carrot.js
+   ```
+   This will connect to port `7373`, create a fresh canvas, procedurally render the carrot, and fit the camera viewport instantly.
+
+3. **To draw custom sizes (e.g., 128x128):**
+   Simply modify the `width`, `height`, and loop bounds inside the script to `128`. We recommend defining coordinates relatively (e.g. `const CX = W / 2`) so they scale automatically!
+
+---
+
+### B. Optimal Drawing Guidelines (For Other AI Agents)
+When another AI agent connects to this workspace, they should follow these performance rules to draw at maximum speed without locking the Godot engine thread:
+
+1. **Color Caching Advantage:**
+   The `PixMcpBridge` plugin features a built-in `color_cache` lookup dictionary in its GDScript handler. It only parses hex values once per color in a batch. 
+
+2. **Group by Color:**
+   When compiling coordinates, group pixels with the same color together in your array payload. This ensures that the engine only executes a single string validation parse per unique hex key.
+
+3. **Perfect Batch Sizes:**
+   - For small grids (64x64 or less), send all pixels in a single batch.
+   - For large grids (128x128 to 1024x1024), split the drawing payload into chunks of **`15,000` pixels per request**. This provides the absolute best balance between HTTP connection overhead and Godot engine thread rendering responsiveness.
+
+4. **Canvas fit:**
+   Always append a call to `fit_viewport` at the end of your drawing sequence to instantly center and center-fit the frame for the user's inspection.

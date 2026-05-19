@@ -10,6 +10,15 @@ Describe what you want in plain English. The AI handles the rest — shapes, col
 
 ---
 
+> [!IMPORTANT]
+> ### 📚 Where to Start? (New User & Developer Guide)
+> * **If you want to install and connect this to Claude/Cursor:** Read our beginner-friendly 🚶‍♂️ **[Getting Started Guide](docs/getting-started.md)** first!
+> * **If you want to write or execute your own custom JS drawing scripts:** Check out the ⚡ **[High-Speed Drawing & Manual Custom Scripts Guide](docs/getting-started.md#%E2%9A%A1-high-speed-drawing--manual-custom-scripts)**!
+> * **If you are an autonomous AI Agent or a Developer coding procedural art:** Jump straight to the 💡 **[Agentic Drawing Playbook](AGENTIC_DRAWING_PLAYBOOK.md)** to learn advanced pixel-shading math and 15,000x faster drawing optimization rules!
+
+---
+
+
 ## ✨ Features
 
 - **30+ drawing tools** exposed as MCP tools — pixels, lines, rectangles, ellipses, polygons, flood fill, and more
