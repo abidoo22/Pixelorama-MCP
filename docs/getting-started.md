@@ -117,6 +117,10 @@ Once connected, start a new chat session with your AI assistant and send a drawi
 ### A. How to Run & Draw Scripts Manually (For Humans)
 If you want to write or execute a `.js` drawing script yourself instead of asking an AI client, follow these steps:
 
+> [!IMPORTANT]
+> **🖥️ Pixelorama Window Must Be Visible & Not Minimized:**
+> Godot throttles process loops and rendering ticks when the application is minimized or run entirely in the background. **For the drawing commands to process instantly, make sure Pixelorama is fully open on your screen and not minimized!**
+
 1. **Make sure Pixelorama is open:**
    Launch it in single-window mode to cleanly handle active popups:
    ```bash
@@ -129,6 +133,7 @@ If you want to write or execute a `.js` drawing script yourself instead of askin
    node docs/examples/draw_carrot.js
    ```
    This will connect to port `7373`, create a fresh canvas, procedurally render the carrot, and fit the camera viewport instantly.
+
 
 3. **To draw custom sizes (e.g., 128x128):**
    Simply modify the `width`, `height`, and loop bounds inside the script to `128`. We recommend defining coordinates relatively (e.g. `const CX = W / 2`) so they scale automatically!

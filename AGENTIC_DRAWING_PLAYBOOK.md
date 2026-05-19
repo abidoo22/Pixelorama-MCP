@@ -8,7 +8,12 @@ Welcome! This guide is designed for AI agents and developer subagents to learn h
 
 To draw any high-fidelity pixel art asset, always structure your drawing agent or script following this exact sequence:
 
+> [!IMPORTANT]
+> **🖥️ Pixelorama Visibility & Active Thread Requirement:**
+> Godot throttles process loops and REST socket polling when minimized or hidden. **To prevent execution hangs and ensure immediate drawing, the Pixelorama window must be fully visible on the user's desktop screen and not minimized!** If running headlessly or minimized, X11 focus commands must be sent to raise the window first.
+
 1. **Verify Health:** Make sure the local HTTP bridge is running by querying `GET http://127.0.0.1:7373/health`.
+
 2. **Create Canvas:** Call the `create_canvas` tool with specific dimensions (e.g. `64x64`, `128x128`) and a descriptive asset name.
 3. **Fill Background:** Fill the canvas with a solid, premium dark background color (e.g., `#191a21` carbon grey-blue or `#141226` dark synthwave purple) using `fill_area` or let it remain transparent.
 4. **Compute Geometry & Shading (Locally):** Loop through your coordinate grid and determine the color of each pixel based on lighting vectors, curves, and shapes. Keep all outline, body, highlight, and shadow calculations in-memory.
