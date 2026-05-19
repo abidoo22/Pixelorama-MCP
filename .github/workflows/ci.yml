@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  mcp-server:
+    name: MCP Server (TypeScript)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: npm ci
+
+      - name: Type check
+        working-directory: mcp-server
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: mcp-server
+        run: npm run lint
+
+      - name: Build
+        working-directory: mcp-server
+        run: npm run build
+
+      - name: Test
+        working-directory: mcp-server
+        run: npm test
+
+  plugin-lint:
+    name: Pixelorama Plugin (GDScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GDScript syntax check
+        run: |
+          echo "GDScript syntax validation placeholder"
+          # TODO: Add gdtoolkit or gdformat linting once plugin is mature
+          find pixelorama-plugin -name "*.gd" -exec echo "Checking: {}" \;

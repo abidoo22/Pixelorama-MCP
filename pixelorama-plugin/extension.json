@@ -1,0 +1,10 @@
+{
+    "name": "PixMcpBridge",
+    "display_name": "pix-MCP Bridge",
+    "description": "MCP bridge that exposes Pixelorama's drawing API over a local HTTP server, allowing AI assistants to create pixel art programmatically.",
+    "author": "pix-MCP Contributors",
+    "version": "0.1",
+    "supported_api_versions": [6, 7, 8, 9, 10],
+    "license": "MIT",
+    "nodes": ["Main.tscn"]
+}
