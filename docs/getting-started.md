@@ -1,79 +1,66 @@
 # 🚀 Getting Started with pix-MCP
 
-Welcome to **pix-MCP**! This guide walks you through the step-by-step process of setting up the environment, installing the Model Context Protocol (MCP) server, configuring it with your favorite AI client (like Claude Desktop or Cursor), and running your very first drawing command.
+Welcome to **pix-MCP**! This guide covers everything you need: installing the server, connecting an AI client, running drawing scripts manually, and importing existing images into Pixelorama.
 
 ---
 
 ## 📋 Prerequisites
 
-Before you begin, ensure you have the following installed on your system:
-- **Node.js** (version 18 or higher)
-- **npm** (comes bundled with Node.js)
-- **Pixelorama** (version v1.1.10-stable)
-- **Godot v4.6** (only required if you want to modify or compile the bridge extension)
+- **Node.js** v18 or higher — [nodejs.org](https://nodejs.org/)
+- **Pixelorama** v1.1.10-stable — [pixelorama.org](https://www.pixelorama.org/)
+- **Godot v4.6** *(only if you want to modify or recompile the bridge plugin)*
 
 ---
 
-## 🛠️ Step 1: Clone and Build the MCP Server
+## Step 1 — Clone and Build the MCP Server
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/abidoo22/Pixelorama-MCP.git
-   cd Pixelorama-MCP
-   ```
+```bash
+git clone https://github.com/abidoo22/Pixelorama-MCP.git
+cd Pixelorama-MCP/mcp-server
+npm install
+npm run build
+```
 
-2. **Install and Build Server Dependencies:**
-   ```bash
-   cd mcp-server
-   npm install
-   npm run build
-   ```
-
-   This will compile the TypeScript files and place the final JavaScript build inside `mcp-server/dist/index.js`.
+This compiles TypeScript into `mcp-server/dist/index.js`.
 
 ---
 
-## 📦 Step 2: Install and Enable the Pixelorama Extension
+## Step 2 — Install the Pixelorama Plugin
 
-To allow the MCP server to communicate with Pixelorama, you must install the lightweight REST bridge extension.
+The bridge plugin runs a lightweight HTTP server inside Pixelorama on port `7373`. The MCP server talks to it.
 
-1. **Locate the Pre-compiled PCK:**
-   The pre-compiled extension is located at `pixelorama-plugin/PixMcpBridge.pck`.
+1. Launch Pixelorama
+2. Go to **Edit → Preferences** (or `Ctrl+,`) → **Extensions** tab
+3. Click **Add Extension** and select `pixelorama-plugin/PixMcpBridge.pck`
+4. Click **Enable** next to the extension
+5. Close Preferences and **restart Pixelorama**
 
-2. **Add to Pixelorama:**
-   - Launch Pixelorama.
-   - Go to **Edit → Preferences** (or press `Ctrl + ,`).
-   - Navigate to the **Extensions** tab.
-   - Click the **Add Extension** button at the top.
-   - Select the `PixMcpBridge.pck` file.
-   - Click **Enable** next to the newly loaded extension.
-   - Close the Preferences dialog and restart Pixelorama.
+**Verify it's working:**
+```bash
+curl -s http://127.0.0.1:7373/health
+```
+Expected response:
+```json
+{
+  "status": "ok",
+  "server": "pix-mcp-bridge",
+  "pixelorama_version": "v1.1.10-stable",
+  "api_version": 8
+}
+```
 
-3. **Verify Connection:**
-   Open a terminal and perform a health check:
-   ```bash
-   curl -s http://127.0.0.1:7373/health
-   ```
-   You should receive a successful JSON response:
-   ```json
-   {
-     "status": "ok",
-     "server": "pix-mcp-bridge",
-     "pixelorama_version": "v1.1.10-stable",
-     "api_version": 8
-   }
-   ```
+> ⚠️ **Keep Pixelorama visible and not minimized.** Godot throttles its process loop when the window is hidden, which causes drawing commands to hang or slow down significantly.
 
 ---
 
-## 🔌 Step 3: Connect to your AI Client
+## Step 3 — Connect to Your AI Client
 
-### A. Connecting to Claude Desktop
-Add the server definition to your `claude_desktop_config.json`:
+### Claude Desktop
 
-* **Linux:** `~/.config/Claude/claude_desktop_config.json`
-* **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-* **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+Edit your config file:
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -86,72 +73,125 @@ Add the server definition to your `claude_desktop_config.json`:
 }
 ```
 
-### B. Connecting to Cursor IDE
-1. Open Cursor and navigate to **Settings → Features → MCP**.
-2. Click **+ Add New MCP Server**.
-3. Fill out the fields:
-   - **Name:** `pix-mcp`
-   - **Type:** `command`
-   - **Command:** `node /absolute/path/to/pix-MCP/mcp-server/dist/index.js`
-4. Click **Save** and verify the status turns green.
+Restart Claude Desktop. You should see pix-mcp appear in the tools list.
 
----
+### Cursor IDE
 
-## 🎨 Step 4: Your First Drawing Prompt
-
-Once connected, start a new chat session with your AI assistant and send a drawing prompt:
-
-> **Prompt:** *"Create a 64x64 canvas named 'Apple' and draw a beautiful shiny red apple on it with a green leaf and a nice drop shadow!"*
-
-### 💡 What the AI will do under the hood:
-1. Call `create_canvas` to set up the 64x64 artboard.
-2. Formulate a shading grid (with highlights on the top-left, shadows on the bottom-right).
-3. Compute the drop shadow offset.
-4. Draw the outline and details in high-performance pixel batches via `draw_pixels`.
-5. Focus and center the screen so you can inspect your brand-new sprite instantly!
-
----
-
-## ⚡ High-Speed Drawing & Manual Custom Scripts
-
-### A. How to Run & Draw Scripts Manually (For Humans)
-If you want to write or execute a `.js` drawing script yourself instead of asking an AI client, follow these steps:
-
-> [!IMPORTANT]
-> **🖥️ Pixelorama Window Must Be Visible & Not Minimized:**
-> Godot throttles process loops and rendering ticks when the application is minimized or run entirely in the background. **For the drawing commands to process instantly, make sure Pixelorama is fully open on your screen and not minimized!**
-
-1. **Make sure Pixelorama is open:**
-   Launch it in single-window mode to cleanly handle active popups:
-   ```bash
-   /home/abido/Downloads/Pixelorama-Linux-64bit/Pixelorama.x86_64 --rendering-driver opengl3 --single-window &
+1. Go to **Settings → Features → MCP**
+2. Click **+ Add New MCP Server**
+3. Set **Name** to `pix-mcp`, **Type** to `command`, **Command** to:
    ```
-
-2. **Run the script using Node.js:**
-   Use node to execute any script in the `docs/examples/` folder directly:
-   ```bash
-   node docs/examples/draw_carrot.js
+   node /absolute/path/to/pix-MCP/mcp-server/dist/index.js
    ```
-   This will connect to port `7373`, create a fresh canvas, procedurally render the carrot, and fit the camera viewport instantly.
-
-
-3. **To draw custom sizes (e.g., 128x128):**
-   Simply modify the `width`, `height`, and loop bounds inside the script to `128`. We recommend defining coordinates relatively (e.g. `const CX = W / 2`) so they scale automatically!
+4. Save and verify the status turns green
 
 ---
 
-### B. Optimal Drawing Guidelines (For Other AI Agents)
-When another AI agent connects to this workspace, they should follow these performance rules to draw at maximum speed without locking the Godot engine thread:
+## Step 4 — Your First Drawing Prompt
 
-1. **Color Caching Advantage:**
-   The `PixMcpBridge` plugin features a built-in `color_cache` lookup dictionary in its GDScript handler. It only parses hex values once per color in a batch. 
+Make sure Pixelorama is open and visible. Then ask your AI client:
 
-2. **Group by Color:**
-   When compiling coordinates, group pixels with the same color together in your array payload. This ensures that the engine only executes a single string validation parse per unique hex key.
+> *"Create a 64x64 canvas named 'Apple' and draw a shiny red apple with a green leaf and a drop shadow"*
 
-3. **Perfect Batch Sizes:**
-   - For small grids (64x64 or less), send all pixels in a single batch.
-   - For large grids (128x128 to 1024x1024), split the drawing payload into chunks of **`15,000` pixels per request**. This provides the absolute best balance between HTTP connection overhead and Godot engine thread rendering responsiveness.
+The AI will call `create_canvas`, compute the geometry and shading in memory, and batch-send all pixels to Pixelorama via `draw_pixels`. You'll see it appear live.
 
-4. **Canvas fit:**
-   Always append a call to `fit_viewport` at the end of your drawing sequence to instantly center and center-fit the frame for the user's inspection.
+---
+
+## <a name="manual-scripts"></a> Running Drawing Scripts Manually (No API Key Needed)
+
+Don't have an API key? No problem. Every example in `docs/examples/` is a standalone Node.js script you can run directly.
+
+**Make sure Pixelorama is open and visible, then:**
+```bash
+node docs/examples/draw_coin.js
+node docs/examples/draw_potato.js
+node docs/examples/draw_banana.js
+```
+
+Each script connects to port `7373`, creates its canvas, computes all geometry locally, and draws everything in optimized batches.
+
+**Want a custom sprite?** Describe what you want to an AI assistant (Claude, ChatGPT, etc.) and ask it to write you a drawing script in the same style as the examples. Paste the coin script as a reference — the AI will understand the pattern immediately.
+
+---
+
+## <a name="image-import"></a> Importing Any Image into Pixelorama
+
+This is the most powerful workflow for complex sprites. Generate an image with any AI tool (Midjourney, DALL-E, Stable Diffusion, Nano Banana, etc.), then import it directly into Pixelorama as an editable pixel art file.
+
+### How it works
+
+The import script (`docs/examples/import_universal_asset.js`):
+1. Reads any PNG file using only built-in Node.js modules (no external dependencies)
+2. Auto-detects the background color by sampling the image corners
+3. Strips out background pixels using Euclidean color distance
+4. Lets you blacklist additional colors by RGB value
+5. Streams the remaining pixels into Pixelorama with full transparency
+
+### Setup
+
+Open `docs/examples/import_universal_asset.js` and edit the **USER CONFIGURATION ZONE** at the top:
+
+```javascript
+// 1. Path to your source image
+const IMAGE_PATH = './my-sprite.png';
+
+// 2. Colors to remove (add as many as needed)
+const bannedColors = [
+  { r: 166, g: 163, b: 156 }, // example: background gray
+  { r: 36,  g: 231, b: 30  }, // example: artifact green outline
+];
+
+// 3. How aggressively to clean edges (higher = more aggressive)
+const TOLERANCE = 20;
+```
+
+Then run:
+```bash
+node docs/examples/import_universal_asset.js
+```
+
+### Tips for best results
+
+**Choosing TOLERANCE:**
+- `10–15` — conservative, preserves fine color gradients near edges
+- `20–25` — good default for most AI-generated images
+- `30+` — aggressive, use if background bleeds into the sprite edges
+
+**Finding background colors to blacklist:**
+Open your source image in any image editor, use the color picker on the background area, and note the RGB values. Add them to `bannedColors`.
+
+**Preparing your source image:**
+- Use a flat, solid background color when generating (not gradient)
+- Higher resolution source = more detail preserved
+- PNG format only (JPEG compression artifacts cause color bleeding)
+
+---
+
+## Performance Reference
+
+| Canvas Size | Recommended Batch Size | Typical Draw Time |
+|---|---|---|
+| 64×64 | All pixels at once | < 1 second |
+| 128×128 | 15,000 pixels/batch | 1–3 seconds |
+| 256×256 | 15,000 pixels/batch | 5–10 seconds |
+| 512×512+ | 15,000 pixels/batch | 20–60 seconds |
+
+---
+
+## Troubleshooting
+
+**Port 7373 refused / no response**
+- Make sure the PixMcpBridge extension is enabled in Pixelorama's preferences
+- Make sure Pixelorama is fully open (not minimized)
+- Check if the extension was quarantined — see [Plugin Setup](plugin-setup.md#quarantine)
+
+**Drawing appears but is very slow**
+- Pixelorama is probably minimized or hidden — bring it to the foreground
+- Reduce batch size to 2,000 if on a slow machine
+
+**Background not fully removed after import**
+- Sample the exact background RGB values from your image and add them to `bannedColors`
+- Increase `TOLERANCE` by 5–10
+
+**Extension disappeared from Pixelorama preferences**
+- It was quarantined due to a load error — see [Plugin Setup](plugin-setup.md#quarantine) for the fix
