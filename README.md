@@ -130,7 +130,7 @@ npx @modelcontextprotocol/inspector node dist/index.js
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a PR.
+Contributions are welcome!
 
 ## 📄 License
 
