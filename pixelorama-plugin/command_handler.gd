@@ -222,14 +222,16 @@ func _cmd_get_canvas_snapshot(params: Dictionary) -> Dictionary:
 
 	var x: int = params.get("x", 0)
 	var y: int = params.get("y", 0)
-	var width: int = params.get("width", mini(image.get_width(), 64))
-	var height: int = params.get("height", mini(image.get_height(), 64))
+	var width: int = params.get("width", mini(image.get_width(), 32))
+	var height: int = params.get("height", mini(image.get_height(), 32))
 
-	# Clamp to canvas bounds
+	# Clamp to canvas bounds and cap the region to keep the response payload bounded.
 	x = clampi(x, 0, image.get_width() - 1)
 	y = clampi(y, 0, image.get_height() - 1)
 	width = mini(width, image.get_width() - x)
 	height = mini(height, image.get_height() - y)
+	width = mini(width, 128)
+	height = mini(height, 128)
 
 	# Build a compact color map — unique colors indexed, then a grid of indices
 	var color_map: Dictionary = {}

@@ -9,7 +9,7 @@ func _init():
 		return
 
 	var prefix = "res://src/Extensions/PixMcpBridge/"
-	var plugin_dir = "/home/abido/Downloads/pix-MCP/pixelorama-plugin/"
+	var plugin_dir = "pixelorama-plugin/"
 
 	packer.add_file(prefix + "extension.json", plugin_dir + "extension.json")
 	packer.add_file(prefix + "Main.tscn", plugin_dir + "Main.tscn")
