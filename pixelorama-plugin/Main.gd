@@ -6,6 +6,9 @@ extends Node
 
 const PORT: int = 7373
 const MAX_REQUEST_SIZE: int = 4194304  # 4 MB max request body
+const MAX_RESPONSE_CHUNK: int = 8192   # max bytes written per frame (keeps loop non-blocking)
+const CLIENT_TIMEOUT_MS: int = 15000   # drop connections idle longer than this
+const MAX_CLIENTS: int = 32
 
 var _server: TCPServer = TCPServer.new()
 var _clients: Array = []
@@ -17,6 +20,7 @@ const LOG_TAG: String = "[pix-MCP] "
 
 
 func _enter_tree() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_api = get_node_or_null("/root/ExtensionsApi")
 	if _api == null:
 		push_error(LOG_TAG + "ExtensionsApi not found! Is this running inside Pixelorama?")
@@ -38,17 +42,20 @@ func _process(_delta: float) -> void:
 	if not _server.is_listening():
 		return
 
-	# Accept new connections
-	while _server.is_connection_available():
+	# Accept new connections (bounded so a flood can't exhaust memory)
+	while _server.is_connection_available() and _clients.size() < MAX_CLIENTS:
 		var peer := _server.take_connection()
 		if peer:
 			_clients.append({
 				"peer": peer,
 				"buffer": PackedByteArray(),
-				"state": "reading_headers",
 				"headers_parsed": false,
 				"content_length": 0,
 				"header_end_index": -1,
+				"state": "recv",              # "recv" -> "respond"
+				"response": PackedByteArray(),
+				"response_sent": 0,
+				"last_active": Time.get_ticks_msec(),
 			})
 
 	# Process existing connections
@@ -58,16 +65,40 @@ func _process(_delta: float) -> void:
 		var peer: StreamPeerTCP = client["peer"]
 		peer.poll()
 
-		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		var status := peer.get_status()
+		if status != StreamPeerTCP.STATUS_CONNECTED:
 			to_remove.append(i)
 			continue
 
-		# Read available data
+		# Drop stale connections so a dead client can never wedge the loop.
+		var idle: int = Time.get_ticks_msec() - int(client["last_active"])
+		if idle > CLIENT_TIMEOUT_MS:
+			peer.disconnect_from_host()
+			to_remove.append(i)
+			continue
+
+		if client["state"] == "respond":
+			# Flush pending response in bounded chunks; never block on a slow client.
+			var remaining: int = client["response"].size() - client["response_sent"]
+			if remaining <= 0:
+				peer.disconnect_from_host()
+				to_remove.append(i)
+				continue
+			var chunk_len: int = mini(remaining, MAX_RESPONSE_CHUNK)
+			var chunk: PackedByteArray = client["response"].slice(client["response_sent"], client["response_sent"] + chunk_len)
+			var err := peer.put_data(chunk)
+			if err == OK:
+				client["response_sent"] += chunk_len
+				client["last_active"] = Time.get_ticks_msec()
+			continue
+
+		# state == "recv": read available request bytes
 		var available := peer.get_available_bytes()
 		if available > 0:
 			var data := peer.get_data(mini(available, MAX_REQUEST_SIZE))
-			if data[0] == OK:  # error code
+			if data[0] == OK:
 				client["buffer"].append_array(data[1])
+				client["last_active"] = Time.get_ticks_msec()
 
 		# Parse headers if not done yet
 		if not client["headers_parsed"]:
@@ -83,30 +114,34 @@ func _process(_delta: float) -> void:
 					if line.to_lower().begins_with("content-length:"):
 						client["content_length"] = int(line.split(":")[1].strip_edges())
 						break
-				print(LOG_TAG + "Parsed headers. Content-Length: %d, header_end_index: %d" % [client["content_length"], client["header_end_index"]])
+				print(LOG_TAG + "Parsed headers. Content-Length: %d" % client["content_length"])
 
 		# Check if we have the full body
 		if client["headers_parsed"]:
 			var body_received: int = client["buffer"].size() - client["header_end_index"]
 			if body_received >= client["content_length"]:
-				print(LOG_TAG + "Body fully received: %d/%d bytes. Handling request..." % [body_received, client["content_length"]])
 				_handle_request(client)
-				to_remove.append(i)
-			else:
-				# Log waiting once in a while or when more bytes arrive
-				if available > 0:
-					print(LOG_TAG + "Waiting for body: %d/%d bytes received" % [body_received, client["content_length"]])
+				_flush_chunk(client)
 
-	# Clean up disconnected/completed clients (reverse order)
-	to_remove.sort()
-	to_remove.reverse()
-	for idx in to_remove:
-		if idx < _clients.size():
-			_clients.remove_at(idx)
+
+func _flush_chunk(client: Dictionary) -> void:
+	## Send up to MAX_RESPONSE_CHUNK bytes of a pending response.
+	var peer: StreamPeerTCP = client["peer"]
+	if client["state"] != "respond":
+		return
+	var remaining: int = client["response"].size() - client["response_sent"]
+	if remaining <= 0:
+		peer.disconnect_from_host()
+		return
+	var chunk_len: int = mini(remaining, MAX_RESPONSE_CHUNK)
+	var chunk: PackedByteArray = client["response"].slice(client["response_sent"], client["response_sent"] + chunk_len)
+	var err := peer.put_data(chunk)
+	if err == OK:
+		client["response_sent"] += chunk_len
+		client["last_active"] = Time.get_ticks_msec()
 
 
 func _handle_request(client: Dictionary) -> void:
-	var peer: StreamPeerTCP = client["peer"]
 	var buf_str: String = client["buffer"].get_string_from_utf8()
 	var header_end: int = client["header_end_index"]
 
@@ -153,14 +188,16 @@ func _handle_request(client: Dictionary) -> void:
 		# CORS preflight
 		response_body = ""
 		status_code = 204
+
 	else:
 		response_body = JSON.stringify({"error": "Not found", "path": path, "method": method})
 		status_code = 404
 
-	# Send HTTP response
+	# Build HTTP response (stored on the client; sent incrementally in _process).
+	# Content-Length uses the UTF-8 byte count so multi-byte bodies are sized correctly.
 	var response := "HTTP/1.1 %d %s\r\n" % [status_code, _status_text(status_code)]
 	response += "Content-Type: application/json\r\n"
-	response += "Content-Length: %d\r\n" % response_body.length()
+	response += "Content-Length: %d\r\n" % response_body.to_utf8_buffer().size()
 	response += "Access-Control-Allow-Origin: *\r\n"
 	response += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
 	response += "Access-Control-Allow-Headers: Content-Type\r\n"
@@ -168,8 +205,9 @@ func _handle_request(client: Dictionary) -> void:
 	response += "\r\n"
 	response += response_body
 
-	peer.put_data(response.to_utf8_buffer())
-	peer.disconnect_from_host()
+	client["response"] = response.to_utf8_buffer()
+	client["response_sent"] = 0
+	client["state"] = "respond"
 
 
 func _execute_command(body: String) -> Dictionary:
