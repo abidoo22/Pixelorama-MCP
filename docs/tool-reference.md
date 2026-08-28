@@ -65,12 +65,12 @@ Saves the active project to a `.pxo` file.
 ---
 
 ### `export_image`
-Exports the active frame as PNG.
+Exports a specific frame of the canvas as a PNG image.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | ✅ | Absolute path for output PNG |
-| `frame_idx` | number | — | Frame index (default: current frame) |
+| `frame` | number | — | Frame index (default: `0`) |
 
 ```json
 { "success": true, "data": { "path": "/home/user/output.png", "format": "png" } }
@@ -79,10 +79,27 @@ Exports the active frame as PNG.
 ---
 
 ### `get_canvas_snapshot`
-Returns a base64-encoded PNG of the current canvas. Useful for agents to inspect progress.
+Returns pixel data for a region of the canvas as a compact color-indexed grid.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `x` | number | `0` | Top-left X coordinate |
+| `y` | number | `0` | Top-left Y coordinate |
+| `width` | number | `32` | Width of snapshot region (max 128) |
+| `height` | number | `32` | Height of snapshot region (max 128) |
 
 ```json
-{ "success": true, "data": { "base64": "iVBORw0KGgoAAAANSUhEUgAAAD..." } }
+{
+  "success": true,
+  "data": {
+    "x": 0,
+    "y": 0,
+    "width": 32,
+    "height": 32,
+    "colors": ["00000000", "ffd700ff"],
+    "grid": [[0, 0, 1, 0], [0, 1, 1, 1]]
+  }
+}
 ```
 
 ---
@@ -125,7 +142,7 @@ Draws a single pixel. Only use for one-off corrections — never in a loop.
 |---|---|---|---|
 | `x` | number | ✅ | X coordinate |
 | `y` | number | ✅ | Y coordinate |
-| `color` | string | — | Hex color (default: active color) |
+| `color` | string | — | Hex color (default: `"#000000"`) |
 
 ---
 
@@ -138,8 +155,8 @@ Draws a filled or outlined rectangle.
 | `y` | number | ✅ | Top-left Y |
 | `width` | number | ✅ | Width in pixels |
 | `height` | number | ✅ | Height in pixels |
-| `color` | string | — | Hex color |
-| `fill` | boolean | — | `true` = filled (default), `false` = outline only |
+| `color` | string | — | Hex color (default: `"#000000"`) |
+| `filled` | boolean | — | `true` = filled (default), `false` = outline only |
 
 ---
 
@@ -148,12 +165,12 @@ Draws a filled or outlined ellipse or circle.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `x` | number | ✅ | Center X |
-| `y` | number | ✅ | Center Y |
+| `cx` | number | ✅ | Center X |
+| `cy` | number | ✅ | Center Y |
 | `rx` | number | ✅ | X radius |
 | `ry` | number | ✅ | Y radius |
-| `color` | string | — | Hex color |
-| `fill` | boolean | — | `true` = filled (default) |
+| `color` | string | — | Hex color (default: `"#000000"`) |
+| `filled` | boolean | — | `true` = filled (default), `false` = outline only |
 
 ---
 
@@ -162,10 +179,9 @@ Draws a straight line using Bresenham's algorithm.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `x0`, `y0` | number | ✅ | Start point |
-| `x1`, `y1` | number | ✅ | End point |
-| `color` | string | — | Hex color |
-| `width` | number | — | Line width in pixels (default: 1) |
+| `x1`, `y1` | number | ✅ | Start point |
+| `x2`, `y2` | number | ✅ | End point |
+| `color` | string | — | Hex color (default: `"#000000"`) |
 
 ---
 
@@ -174,9 +190,9 @@ Draws a polygon from a vertex array.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `vertices` | array | ✅ | `[{"x": 10, "y": 12}, ...]` |
-| `color` | string | — | Hex color |
-| `fill` | boolean | — | `true` = filled (default) |
+| `points` | array | ✅ | `[{"x": 10, "y": 12}, ...]` (min 3) |
+| `color` | string | — | Hex color (default: `"#000000"`) |
+| `filled` | boolean | — | `true` = filled (default), `false` = outline only |
 
 ---
 
@@ -185,8 +201,9 @@ Draws a continuous polyline connecting ordered points.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `points` | array | ✅ | Ordered `[{x, y}, ...]` coordinates |
-| `color` | string | — | Hex color |
+| `points` | array | ✅ | Ordered `[{"x": 10, "y": 12}, ...]` coordinates (min 2) |
+| `closed` | boolean | — | If `true`, closes path back to start (default: `false`) |
+| `color` | string | — | Hex color (default: `"#000000"`) |
 
 ---
 
@@ -197,7 +214,7 @@ Flood-fills from a seed coordinate (paint bucket).
 |---|---|---|---|
 | `x` | number | ✅ | Seed X |
 | `y` | number | ✅ | Seed Y |
-| `color` | string | — | Fill color |
+| `color` | string | — | Fill color (default: `"#000000"`) |
 
 ---
 
@@ -206,182 +223,247 @@ Flood-fills from a seed coordinate (paint bucket).
 Pixelorama supports multi-layer projects. Use layers to separate background, body, outline, and effects — especially useful when game engines need to manipulate parts independently.
 
 ### `add_layer`
-Adds a new layer on top of the stack.
+Adds a new layer to the current project.
 
-| Parameter | Type | Required | Description |
+| Parameter | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | ✅ | Layer name |
+| `name` | string | `""` | Layer name (empty for auto-naming) |
+| `type` | number | `0` | `0` = Pixel, `1` = Group, `2` = 3D |
+| `above_layer` | number | — | Insert above this layer index (defaults to current layer) |
 
 ```json
-{ "success": true, "data": { "layer_idx": 1, "name": "Outline" } }
+{ "success": true, "data": { "name": "Outline", "type": 0, "above_layer": 0 } }
 ```
 
 ---
 
+### `get_layers`
+Lists all layers with index, name, visibility, locked state, opacity, blend mode, and type.
+
+---
+
 ### `delete_layer`
+Deletes a layer by index.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `layer_idx` | number | ✅ | 0-indexed layer to delete |
+| `index` | number | ✅ | 0-indexed layer to delete |
 
 ---
 
 ### `set_layer_opacity`
+Sets the opacity of a layer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `layer_idx` | number | ✅ | Target layer |
+| `index` | number | ✅ | Target layer index |
 | `opacity` | number | ✅ | `0.0` (transparent) to `1.0` (opaque) |
 
 ---
 
 ### `set_layer_blend_mode`
+Sets the blend mode of a layer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `layer_idx` | number | ✅ | Target layer |
-| `blend_mode` | string | ✅ | See modes below |
-
-Available blend modes: `Normal`, `Multiply`, `Screen`, `Overlay`, `Darken`, `Lighten`, `Color Dodge`, `Color Burn`, `Difference`, `Exclusion`, `Hue`, `Saturation`, `Color`, `Luminosity`
+| `index` | number | ✅ | Target layer index |
+| `blend_mode` | number | ✅ | Enum value `0`–`21` (e.g. `0` = Normal, `1` = Erase, `2` = Darken, `3` = Multiply, `4` = Color Burn, `7` = Screen, `10` = Overlay) |
 
 ---
 
 ### `set_layer_visibility`
+Shows or hides a layer.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `layer_idx` | number | ✅ | Target layer |
-| `visible` | boolean | ✅ | Show or hide |
+| `index` | number | ✅ | Target layer index |
+| `visible` | boolean | ✅ | `true` to show, `false` to hide |
 
 ---
 
 ## 4. Animation & Frames
 
+### `get_frames`
+Lists all frames with index, duration multiplier, and cel count.
+
+---
+
+### `get_fps` / `set_fps`
+Gets or sets playback speed in frames per second.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `fps` | number | ✅ (set only) | Frames per second (e.g. `8`, `12`, `24`) |
+
+---
+
 ### `add_frame`
 Appends a blank frame to the animation timeline.
 
-### `delete_frame`
-
-| Parameter | Type | Required |
+| Parameter | Type | Description |
 |---|---|---|
-| `frame_idx` | number | ✅ |
+| `after_frame` | number | Insert after this frame index (default: current frame) |
+
+---
+
+### `delete_frame`
+Deletes a frame by index (cannot delete the only remaining frame).
+
+| Parameter | Type | Description |
+|---|---|---|
+| `index` | number | Frame index to delete (default: current frame) |
+
+---
 
 ### `duplicate_frame`
-Copies a frame (all layers) to a new position.
+Deep-copies all layer pixel data of a frame into a new frame.
 
-| Parameter | Type | Required |
+| Parameter | Type | Description |
 |---|---|---|
-| `frame_idx` | number | ✅ |
+| `index` | number | Frame index to duplicate (default: current frame) |
+
+---
 
 ### `set_frame_duration`
+Sets duration multiplier of a frame.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `frame_idx` | number | ✅ | Target frame |
-| `duration` | number | ✅ | Duration multiplier (default: `1.0`) |
+| `index` | number | — | Frame index (default: current frame) |
+| `duration` | number | ✅ | Multiplier (`1.0` = normal speed, `2.0` = half speed) |
+
+---
 
 ### `switch_frame`
-Sets the active viewport frame.
-
-| Parameter | Type | Required |
-|---|---|---|
-| `frame_idx` | number | ✅ |
-
-### `get_fps` / `set_fps`
-
-| Parameter | Type | Required |
-|---|---|---|
-| `fps` | number | ✅ (set only) |
-
-### `switch_cel` / `copy_cel` / `clear_cel`
-Fine-grained control over individual layer×frame cels.
-
-| Parameter | Type | Required |
-|---|---|---|
-| `layer_idx` | number | ✅ |
-| `frame_idx` | number | ✅ |
-
-### `export_animation`
-Exports all frames as PNGs or a spritesheet.
+Switches the active frame for drawing.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | ✅ | Output folder or file path |
-| `mode` | string | ✅ | `"frames"` or `"spritesheet"` |
-| `columns` | number | — | Spritesheet columns (default: 8) |
+| `index` | number | ✅ | Frame index to switch to |
+
+---
+
+### `switch_cel` / `copy_cel` / `clear_cel`
+Fine-grained control over individual layer × frame cels.
+
+- **`switch_cel`**: `{ frame: number, layer: number }`
+- **`copy_cel`**: `{ src_frame: number, src_layer: number, dst_frame: number, dst_layer: number }`
+- **`clear_cel`**: `{ frame?: number, layer?: number }`
+
+---
+
+### `export_animation`
+Exports animation frames as individual PNG files or packed into a spritesheet.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | — | Directory path to export into |
+| `prefix` | string | `"frame"` | Filename prefix (e.g. `"walk"`) |
+| `mode` | string | `"frames"` | `"frames"` (individual PNGs) or `"spritesheet"` |
+| `columns` | number | — | Spritesheet columns (only for `"spritesheet"`) |
+| `start_frame` | number | `0` | First frame to export (only for `"frames"`) |
+| `end_frame` | number | last | Last frame to export (only for `"frames"`) |
 
 ---
 
 ## 5. Color & Palettes
 
 ### `set_color`
+Sets active foreground or background drawing color.
 
-| Parameter | Type | Required | Description |
+| Parameter | Type | Default | Description |
 |---|---|---|---|
-| `color` | string | ✅ | Hex color (e.g. `"#ff0055"`) |
-| `is_secondary` | boolean | — | `true` = right-click color |
+| `color` | string | — | Hex color string (e.g. `"#ff0055"`) |
+| `button` | number | `0` | `0` = foreground (left click), `1` = background (right click) |
 
-### `get_assigned_color`
+---
+
+### `get_color`
 Returns current foreground and background colors.
 ```json
 { "foreground": "#ffffff", "background": "#000000" }
 ```
 
-### `create_palette`
+---
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | ✅ | Palette name |
-| `width` / `height` | number | — | Swatch grid dimensions |
-| `is_global` | boolean | — | Available across projects |
-
-### `get_palette_colors` / `add_palette_color` / `set_palette_color`
-Read and modify swatches in the active palette.
+### `get_palette_colors`
+Returns all swatches and dimensions of the active palette.
 
 ---
 
-## 6. Selections & Transforms
+### `create_palette`
+Creates a new palette in Pixelorama.
 
-### `select_rect` / `select_ellipse`
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Palette name |
+| `width` | number | `8` | Palette width |
+| `height` | number | `8` | Palette height |
+| `is_global` | boolean | `true` | Save globally (`true`) or to project (`false`) |
 
-| Parameter | Type | Required |
-|---|---|---|
-| `x`, `y` | number | ✅ |
-| `width`, `height` | number | ✅ |
+---
 
-### `clear_selection` / `invert_selection` / `deselect`
-Standard selection modifiers, no parameters.
+### `add_palette_color` / `set_palette_color`
+- **`add_palette_color`**: `{ color: string }`
+- **`set_palette_color`**: `{ index: number, color: string }`
 
-> **Note:** Move, resize, flip, and rotate transforms operate on the active selection. Make a selection first, then apply the transform tool.
+---
+
+## 6. Selections
+
+### `select_rect`
+Selects a rectangular region on canvas.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `x` | number | — | Top-left X |
+| `y` | number | — | Top-left Y |
+| `width` | number | — | Selection width |
+| `height` | number | — | Selection height |
+| `operation` | number | `0` | `0` = add, `1` = subtract, `2` = intersect |
+
+---
+
+### `select_all`
+Selects the entire canvas area.
+
+---
+
+### `deselect`
+Clears the current selection.
 
 ---
 
 ## 7. AI Helpers
 
 ### `describe_canvas`
-Reads canvas snapshot + layers and returns a descriptive text summary. Useful for agents to self-evaluate drawing progress.
+Reads canvas dimensions, layers, frames, and an indexed pixel snapshot.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `snapshot_width` | number | `32` | Snapshot width (max 64) |
+| `snapshot_height` | number | `32` | Snapshot height (max 64) |
+
+---
 
 ### `suggest_palette`
-Suggests a color palette based on a keyword theme.
+Suggests a color palette based on a keyword theme or lists all built-in palettes.
 
-| Parameter | Type | Required | Description |
+| Parameter | Type | Default | Description |
 |---|---|---|---|
-| `keyword` | string | ✅ | Theme keyword (e.g. `"desert"`, `"synthwave"`, `"forest"`) |
+| `theme` | string | — | Mood or style keyword (e.g. `"nes"`, `"gameboy"`, `"pico8"`, `"forest"`, `"retro"`) |
+| `list_all` | boolean | `false` | If `true`, lists all available built-in palettes |
+
+---
 
 ### `generate_sprite`
-High-level orchestrator. Accepts a text prompt and returns a structured drawing plan.
+Generates a structured, step-by-step drawing plan for an AI agent to execute using `draw_pixels`, `draw_line`, etc.
 
-| Parameter | Type | Required | Description |
+| Parameter | Type | Default | Description |
 |---|---|---|---|
-| `prompt` | string | ✅ | Plain English sprite description |
-
-Returns a drawing plan with coordinate and color parameters. Pass the output to `draw_pixels` to execute.
-```json
-{
-  "success": true,
-  "data": {
-    "plan": "...",
-    "pixels": [{ "x": 10, "y": 10, "color": "#ff0000" }, "..."]
-  }
-}
-```
+| `description` | string | — | What to draw (e.g. `"a golden coin with a star"`) |
+| `width` | number | `16` | Canvas width |
+| `height` | number | `16` | Canvas height |
+| `style` | string | `"pico8"` | Palette style key |
+| `animated` | boolean | `false` | Include multi-frame animation guidance |
+| `frames` | number | `4` | Number of animation frames |

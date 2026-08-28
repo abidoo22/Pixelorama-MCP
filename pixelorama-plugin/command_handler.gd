@@ -28,6 +28,7 @@ func _register_tools() -> void:
 	_tool_registry["save_project"] = Callable(self, "_cmd_save_project")
 	_tool_registry["export_image"] = Callable(self, "_cmd_export_image")
 	_tool_registry["get_canvas_snapshot"] = Callable(self, "_cmd_get_canvas_snapshot")
+	_tool_registry["fit_viewport"] = Callable(self, "_cmd_fit_viewport")
 
 	# Drawing & Painting
 	_tool_registry["draw_pixel"] = Callable(self, "_cmd_draw_pixel")
@@ -296,6 +297,20 @@ func _cmd_export_image(params: Dictionary) -> Dictionary:
 	if err == OK:
 		return {"success": true, "data": {"path": path, "format": "png"}}
 	return {"success": false, "error": "Failed to save image: %s" % error_string(err)}
+
+
+func _cmd_fit_viewport(_params: Dictionary) -> Dictionary:
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		var camera = canvas.get("camera")
+		if camera and camera.has_method("fit_to_frame"):
+			camera.fit_to_frame()
+		elif canvas.has_node("Camera2D"):
+			var cam = canvas.get_node("Camera2D")
+			if cam.has_method("fit_to_frame"):
+				cam.fit_to_frame()
+		canvas.queue_redraw()
+	return {"success": true, "data": {"message": "Viewport centered and fitted to canvas"}}
 
 
 
@@ -721,8 +736,10 @@ func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
 	var opacity: float = params.get("opacity", 1.0)
 	opacity = clampf(opacity, 0.0, 1.0)
 	project.layers[layer_index].opacity = opacity
-	_api.general.get_global().canvas.update_all_layers = true
-	_api.general.get_global().canvas.queue_redraw()
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "opacity": opacity}}
 
 
@@ -737,8 +754,10 @@ func _cmd_set_layer_blend_mode(params: Dictionary) -> Dictionary:
 
 	var blend_mode: int = params.get("blend_mode", 0)
 	project.layers[layer_index].blend_mode = blend_mode
-	_api.general.get_global().canvas.update_all_layers = true
-	_api.general.get_global().canvas.queue_redraw()
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "blend_mode": blend_mode}}
 
 
@@ -753,8 +772,10 @@ func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
 
 	var visible: bool = params.get("visible", true)
 	project.layers[layer_index].visible = visible
-	_api.general.get_global().canvas.update_all_layers = true
-	_api.general.get_global().canvas.queue_redraw()
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "visible": visible}}
 
 

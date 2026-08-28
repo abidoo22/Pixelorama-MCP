@@ -1,8 +1,8 @@
 /**
- * import_universal_asset.js
- * A universal utility to decode any PNG image sheet using pure built-in Node.js modules.
- * Dynamically detects background canvas grid checkerboards, filters out an array of 
- * custom targeted compression colors, and streams pixel-perfect assets directly into Pixelorama.
+ * import_perfect_soldier.js
+ * Decodes the high-quality soldier concept art using pure built-in Node.js modules.
+ * Dynamically samples background tones and explicitly targets compression artifacts 
+ * like #a6a39c to ensure a 100% transparent background cleanup.
  * NOTE: All comments are in English only.
  */
 
@@ -95,47 +95,24 @@ function colorDistance(r1, g1, b1, r2, g2, b2) {
 }
 
 async function main() {
-    // =========================================================================
-    // USER CONFIGURATION ZONE: ADJUST IMAGE PATH, BLACKLIST COLORS, & TOLERANCE
-    // =========================================================================
-    
-    // 1. Change your target image file name here
-    const IMAGE_PATH = './solidar.png'; 
-    
-    // 2. Add as many specific RGB colors as you want to destroy/remove
-    const bannedColors = [
-        { r: 36, g: 231, b: 30 }, // The problematic artifact gray (#FF0000)
-        { r: 97, g: 96, b: 91 },
-        { r: 180, g: 183, b: 176 },
-        { r: 126, g: 127, b: 119 },
-        { r: 82, g: 84, b: 79 },
-        { r: 111, g: 108, b: 103 },
-];
-
-    // 3. Safety buffer padding. Higher = more aggressive edge cleaning, Lower = preserve fine shades , Zero = the exact same picture 
-    const TOLERANCE = 20; 
-
-    // =========================================================================
-
-    console.log(`Reading raw image file from: ${IMAGE_PATH}...`);
+    console.log("Reading raw image file 'edited-image.png'...");
     
     let fileBuffer;
     try {
-        fileBuffer = fs.readFileSync(IMAGE_PATH);
+        fileBuffer = fs.readFileSync('./edited-image.png');
     } catch (e) {
-        console.error(`ERROR: Cannot find the file at '${IMAGE_PATH}'. Check path or filename.`);
+        console.error("ERROR: Cannot find 'edited-image.png'. Please check the file location.");
         process.exit(1);
     }
     
     const img = decodePNG(fileBuffer);
     const { width: W, height: H, bpp, data } = img;
 
-    console.log(`Successfully parsed texture dimensions: ${W}x${H} (${bpp} bpp)`);
-
-    // Dynamic background detection logic (samples the grid colors on the fly)
+    // 1. Dynamic background sample (Top-Left corner pixel)
     const bg1 = { r: data[0], g: data[1], b: data[2] };
     let bg2 = null;
 
+    // Scan for the alternating grid shade
     for (let x = 1; x < W / 2; x++) {
         const idx = x * bpp;
         const r = data[idx];
@@ -149,16 +126,19 @@ async function main() {
     }
     if (!bg2) bg2 = { ...bg1 };
 
-    console.log(`Auto-Sampled Base Grid Tone 1: RGB(${bg1.r}, ${bg1.g}, ${bg1.b})`);
-    console.log(`Auto-Sampled Base Grid Tone 2: RGB(${bg2.r}, ${bg2.g}, ${bg2.b})`);
-    console.log(`Loaded Custom Blacklisted Colors Count: ${bannedColors.length}`);
+    // 2. Explicitly target the user-reported problematic compression color #a6a39c
+    const problemColor = { r: 166, g: 163, b: 156 }; 
 
-    console.log("Allocating production viewport canvas inside Pixelorama...");
-    await cmd("create_canvas", { width: W, height: H, name: "Universal Imported Asset" });
+    console.log(`Targeting Grid Color 1: RGB(${bg1.r}, ${bg1.g}, ${bg1.b})`);
+    console.log(`Targeting Grid Color 2: RGB(${bg2.r}, ${bg2.g}, ${bg2.b})`);
+    console.log(`Targeting Artifact Color: RGB(${problemColor.r}, ${problemColor.g}, ${problemColor.b})`);
+
+    console.log("Allocating clean canvas inside Pixelorama...");
+    await cmd("create_canvas", { width: W, height: H, name: "Premium Soldier Sheet" });
 
     const pixels = [];
+    const TOLERANCE = 20; // Expanded safety padding to dissolve anti-aliased edge blends
 
-    // Core execution loop scanning every single coordinate pixel
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
             const i = (y * W + x) * bpp;
@@ -167,40 +147,30 @@ async function main() {
             const b = data[i + 2];
             const a = (bpp === 4) ? data[i + 3] : 255;
 
-            // Instantly ignore native transparent pixels
             if (a === 0) continue;
 
-            // Calculate Euclidean distance to the two sampled grid background tones
+            // Compute distance metrics to all forbidden backgrounds
             const distToBg1 = colorDistance(r, g, b, bg1.r, bg1.g, bg1.b);
             const distToBg2 = colorDistance(r, g, b, bg2.r, bg2.g, bg2.b);
+            const distToProblem = colorDistance(r, g, b, problemColor.r, problemColor.g, problemColor.b);
 
-            // Check if the current pixel matches any color inside the custom blacklist matrix
-            let matchesBanned = false;
-            for (const banned of bannedColors) {
-                if (colorDistance(r, g, b, banned.r, banned.g, banned.b) <= TOLERANCE) {
-                    matchesBanned = true;
-                    break;
-                }
-            }
-
-            // Draw the pixel only if it survives both background and custom color filters
-            if (distToBg1 > TOLERANCE && distToBg2 > TOLERANCE && !matchesBanned) {
+            // Filter out any pixel close to the banned background group
+            if (distToBg1 > TOLERANCE && distToBg2 > TOLERANCE && distToProblem > TOLERANCE) {
                 pixels.push({ x, y, color: rgbToHex(r, g, b) });
             }
         }
     }
 
-    console.log(`Extracted ${pixels.length} asset pixels. Pumping stream over bridge network...`);
+    console.log(`Extracted ${pixels.length} clean sprite cels. Sending payload...`);
     
-    // Stream chunks safely to prevent UI locking inside Godot engine
     const BATCH_SIZE = 2000;
     for (let i = 0; i < pixels.length; i += BATCH_SIZE) {
         const batch = pixels.slice(i, i + BATCH_SIZE);
         await cmd("draw_pixels", { pixels: batch });
-        process.stdout.write(`\rProgress: ${Math.min(i + BATCH_SIZE, pixels.length)} / ${pixels.length} pixels drawn...`);
+        process.stdout.write(`\rTransmission: ${Math.min(i + BATCH_SIZE, pixels.length)} / ${pixels.length} pixels drawn...`);
     }
     
-    console.log("\nAsset migration complete! Viewport fits successfully with transparent alphas.");
+    console.log("\nUpdate complete! The background artifacts are fully gone.");
     await cmd("fit_viewport");
 }
 

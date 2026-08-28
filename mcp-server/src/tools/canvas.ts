@@ -130,5 +130,23 @@ export function registerCanvasTools(server: McpServer): void {
     }
   );
 
+  server.tool(
+    "fit_viewport",
+    "Center and fit the canvas in the Pixelorama viewport. Call this after creating or finishing a drawing.",
+    {},
+    async () => {
+      const result = await sendCommand("fit_viewport", {});
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? "✅ Viewport fitted to canvas"
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }
 

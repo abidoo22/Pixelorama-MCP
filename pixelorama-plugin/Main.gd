@@ -71,14 +71,15 @@ func _process(_delta: float) -> void:
 
 		# Parse headers if not done yet
 		if not client["headers_parsed"]:
-			var buf_str: String = client["buffer"].get_string_from_utf8()
-			var header_end: int = buf_str.find("\r\n\r\n")
+			var header_end := _find_header_end(client["buffer"])
 			if header_end != -1:
 				client["headers_parsed"] = true
 				client["header_end_index"] = header_end + 4  # past the \r\n\r\n
 
-				# Extract Content-Length
-				var lines: PackedStringArray = buf_str.substr(0, header_end).split("\r\n")
+				# Extract Content-Length from header string
+				var header_bytes: PackedByteArray = client["buffer"].slice(0, header_end)
+				var header_str := header_bytes.get_string_from_utf8()
+				var lines: PackedStringArray = header_str.split("\r\n")
 				for line in lines:
 					if line.to_lower().begins_with("content-length:"):
 						client["content_length"] = int(line.split(":")[1].strip_edges())
@@ -105,21 +106,34 @@ func _process(_delta: float) -> void:
 			_clients.remove_at(idx)
 
 
+func _find_header_end(buf: PackedByteArray) -> int:
+	var sz := buf.size()
+	if sz < 4:
+		return -1
+	for i in range(sz - 3):
+		if buf[i] == 13 and buf[i + 1] == 10 and buf[i + 2] == 13 and buf[i + 3] == 10:
+			return i
+	return -1
+
+
 func _handle_request(client: Dictionary) -> void:
 	var peer: StreamPeerTCP = client["peer"]
-	var buf_str: String = client["buffer"].get_string_from_utf8()
 	var header_end: int = client["header_end_index"]
+	var buffer: PackedByteArray = client["buffer"]
 
-	# Parse request line
-	var first_line: String = buf_str.split("\r\n")[0]
+	# Parse request line from headers
+	var header_bytes: PackedByteArray = buffer.slice(0, header_end)
+	var header_str: String = header_bytes.get_string_from_utf8()
+	var first_line: String = header_str.split("\r\n")[0]
 	var parts: PackedStringArray = first_line.split(" ")
 	var method: String = parts[0] if parts.size() > 0 else ""
 	var path: String = parts[1] if parts.size() > 1 else ""
 
-	# Extract body
+	# Extract body bytes
 	var body := ""
-	if header_end < buf_str.length():
-		body = buf_str.substr(header_end)
+	if header_end < buffer.size():
+		var body_bytes: PackedByteArray = buffer.slice(header_end, header_end + client["content_length"] if client["content_length"] > 0 else buffer.size())
+		body = body_bytes.get_string_from_utf8()
 
 	# Route
 	var response_body: String
@@ -158,17 +172,20 @@ func _handle_request(client: Dictionary) -> void:
 		status_code = 404
 
 	# Send HTTP response
-	var response := "HTTP/1.1 %d %s\r\n" % [status_code, _status_text(status_code)]
-	response += "Content-Type: application/json\r\n"
-	response += "Content-Length: %d\r\n" % response_body.length()
-	response += "Access-Control-Allow-Origin: *\r\n"
-	response += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-	response += "Access-Control-Allow-Headers: Content-Type\r\n"
-	response += "Connection: close\r\n"
-	response += "\r\n"
-	response += response_body
+	var body_bytes: PackedByteArray = response_body.to_utf8_buffer()
+	var response_header := "HTTP/1.1 %d %s\r\n" % [status_code, _status_text(status_code)]
+	response_header += "Content-Type: application/json; charset=utf-8\r\n"
+	response_header += "Content-Length: %d\r\n" % body_bytes.size()
+	response_header += "Access-Control-Allow-Origin: *\r\n"
+	response_header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+	response_header += "Access-Control-Allow-Headers: Content-Type\r\n"
+	response_header += "Connection: close\r\n"
+	response_header += "\r\n"
 
-	peer.put_data(response.to_utf8_buffer())
+	var full_response := response_header.to_utf8_buffer()
+	full_response.append_array(body_bytes)
+
+	peer.put_data(full_response)
 	peer.disconnect_from_host()
 
 
