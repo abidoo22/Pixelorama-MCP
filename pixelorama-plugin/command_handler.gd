@@ -28,6 +28,7 @@ func _register_tools() -> void:
 	_tool_registry["save_project"] = Callable(self, "_cmd_save_project")
 	_tool_registry["export_image"] = Callable(self, "_cmd_export_image")
 	_tool_registry["get_canvas_snapshot"] = Callable(self, "_cmd_get_canvas_snapshot")
+	_tool_registry["get_canvas_image_base64"] = Callable(self, "_cmd_get_canvas_image_base64")
 	_tool_registry["fit_viewport"] = Callable(self, "_cmd_fit_viewport")
 
 	# Drawing & Painting
@@ -39,6 +40,8 @@ func _register_tools() -> void:
 	_tool_registry["draw_polygon"] = Callable(self, "_cmd_draw_polygon")
 	_tool_registry["draw_ellipse"] = Callable(self, "_cmd_draw_ellipse")
 	_tool_registry["fill_area"] = Callable(self, "_cmd_fill_area")
+	_tool_registry["apply_outline"] = Callable(self, "_cmd_apply_outline")
+	_tool_registry["mirror_layer"] = Callable(self, "_cmd_mirror_layer")
 
 	# Colour
 	_tool_registry["set_color"] = Callable(self, "_cmd_set_color")
@@ -287,6 +290,10 @@ func _cmd_export_image(params: Dictionary) -> Dictionary:
 	if frame_idx >= project.frames.size():
 		return {"success": false, "error": "Frame index %d out of range (0-%d)" % [frame_idx, project.frames.size() - 1]}
 
+	var dir_name := path.get_base_dir()
+	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
+		DirAccess.make_dir_recursive_absolute(dir_name)
+
 	# Use Pixelorama's DrawingAlgos to properly blend all visible layers
 	var drawing_algos = _api.general.get_drawing_algos()
 	var img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
@@ -311,6 +318,35 @@ func _cmd_fit_viewport(_params: Dictionary) -> Dictionary:
 				cam.fit_to_frame()
 		canvas.queue_redraw()
 	return {"success": true, "data": {"message": "Viewport centered and fitted to canvas"}}
+
+
+func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var frame_idx: int = params.get("frame", project.current_frame)
+	if frame_idx < 0 or frame_idx >= project.frames.size():
+		return {"success": false, "error": "Frame index out of bounds"}
+
+	var drawing_algos = _api.general.get_drawing_algos()
+	var w := int(project.size.x)
+	var h := int(project.size.y)
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	var frame = project.frames[frame_idx]
+	drawing_algos.blend_layers(img, frame, Vector2i.ZERO, project)
+
+	var png_buffer := img.save_png_to_buffer()
+	var b64 := Marshalls.raw_to_base64(png_buffer)
+	return {
+		"success": true,
+		"data": {
+			"base64": b64,
+			"width": w,
+			"height": h,
+			"frame": frame_idx
+		}
+	}
 
 
 
@@ -657,6 +693,102 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 
 	_commit_image_change(image, "Fill Area")
 	return {"success": true, "data": {"x": x, "y": y, "pixels_filled": filled_count}}
+
+
+func _cmd_apply_outline(params: Dictionary) -> Dictionary:
+	var image := _get_current_image()
+	if image == null:
+		return {"success": false, "error": "No active pixel cel"}
+
+	var color := _parse_color(params, "color", Color.BLACK)
+	var thickness: int = params.get("thickness", 1)
+	thickness = clampi(thickness, 1, 4)
+	var inside: bool = params.get("inside", false)
+
+	var w := image.get_width()
+	var h := image.get_height()
+	var outlined_img := image.duplicate()
+	var count := 0
+
+	for y in range(h):
+		for x in range(w):
+			var current_alpha := image.get_pixel(x, y).a
+			if inside:
+				if current_alpha > 0.1:
+					var is_border := false
+					for dy in range(-thickness, thickness + 1):
+						for dx in range(-thickness, thickness + 1):
+							if dx == 0 and dy == 0:
+								continue
+							var nx := x + dx
+							var ny := y + dy
+							if nx < 0 or nx >= w or ny < 0 or ny >= h or image.get_pixel(nx, ny).a <= 0.1:
+								is_border = true
+								break
+						if is_border:
+							break
+					if is_border:
+						outlined_img.set_pixel(x, y, color)
+						count += 1
+			else:
+				if current_alpha <= 0.1:
+					var is_border := false
+					for dy in range(-thickness, thickness + 1):
+						for dx in range(-thickness, thickness + 1):
+							if dx == 0 and dy == 0:
+								continue
+							var nx := x + dx
+							var ny := y + dy
+							if nx >= 0 and nx < w and ny >= 0 and ny < h and image.get_pixel(nx, ny).a > 0.1:
+								is_border = true
+								break
+						if is_border:
+							break
+					if is_border:
+						outlined_img.set_pixel(x, y, color)
+						count += 1
+
+	_commit_image_change(outlined_img, "Apply Outline")
+	return {"success": true, "data": {"outline_pixels": count, "color": color.to_html(), "thickness": thickness, "inside": inside}}
+
+
+func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
+	var image := _get_current_image()
+	if image == null:
+		return {"success": false, "error": "No active pixel cel"}
+
+	var axis: String = params.get("axis", "horizontal")
+	var mode: String = params.get("mode", "flip")
+	var w := image.get_width()
+	var h := image.get_height()
+	var new_img := image.duplicate()
+
+	if mode == "mirror_left_to_right":
+		var half_w := w / 2
+		for y in range(h):
+			for x in range(half_w):
+				var px = image.get_pixel(x, y)
+				new_img.set_pixel(w - 1 - x, y, px)
+	elif mode == "mirror_right_to_left":
+		var half_w := w / 2
+		for y in range(h):
+			for x in range(half_w):
+				var px = image.get_pixel(w - 1 - x, y)
+				new_img.set_pixel(x, y, px)
+	elif mode == "mirror_top_to_bottom":
+		var half_h := h / 2
+		for y in range(half_h):
+			for x in range(w):
+				var px = image.get_pixel(x, y)
+				new_img.set_pixel(x, h - 1 - y, px)
+	else:
+		if axis == "vertical":
+			new_img.flip_y()
+		else:
+			new_img.flip_x()
+
+	_commit_image_change(new_img, "Mirror / Flip Layer")
+	return {"success": true, "data": {"axis": axis, "mode": mode}}
 
 
 # ─────────────────────────────────────────────
@@ -1020,6 +1152,10 @@ func _cmd_export_animation(params: Dictionary) -> Dictionary:
 	if dir_path.is_empty():
 		return {"success": false, "error": "Missing 'path' directory parameter"}
 
+	# Ensure export directory exists
+	if not DirAccess.dir_exists_absolute(dir_path):
+		DirAccess.make_dir_recursive_absolute(dir_path)
+
 	var prefix: String = params.get("prefix", "frame")
 	var mode: String = params.get("mode", "frames")  # "frames" or "spritesheet"
 	var drawing_algos = _api.general.get_drawing_algos()
@@ -1029,6 +1165,7 @@ func _cmd_export_animation(params: Dictionary) -> Dictionary:
 
 	if mode == "spritesheet":
 		var cols: int = params.get("columns", project.frames.size())
+		cols = maxi(1, cols)
 		var rows := ceili(float(project.frames.size()) / float(cols))
 		var sheet := Image.create(w * cols, h * rows, false, Image.FORMAT_RGBA8)
 
@@ -1042,7 +1179,7 @@ func _cmd_export_animation(params: Dictionary) -> Dictionary:
 		var sheet_path := dir_path.path_join("%s_spritesheet.png" % prefix)
 		var err := sheet.save_png(sheet_path)
 		if err != OK:
-			return {"success": false, "error": "Failed to save spritesheet: %s" % error_string(err)}
+			return {"success": false, "error": "Failed to save spritesheet to '%s': %s" % [sheet_path, error_string(err)]}
 		return {"success": true, "data": {"mode": "spritesheet", "path": sheet_path, "frames": project.frames.size(), "columns": cols, "rows": rows}}
 	else:
 		# Export individual frames

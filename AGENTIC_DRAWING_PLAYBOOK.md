@@ -14,12 +14,14 @@ Always execute drawing tasks in this exact order:
 2. Create canvas        → create_canvas
 3. Compute geometry     → in memory (no API calls yet)
 4. Compute shading      → in memory
-5. Compute outlines     → in memory
+5. Compute outlines     → in memory (or call apply_outline)
 6. Flush pixels         → draw_pixels (batched)
-7. Fit viewport         → fit_viewport
+7. Visual inspection    → capture_canvas_image (multimodal vision feedback)
+8. Fit viewport         → fit_viewport
+9. Export to Godot      → export_godot_spriteframes / export_godot_tileset
 ```
 
-> ⚠️ **Pixelorama must be visible on screen and not minimized.** Godot throttles its process loop when hidden. If the window is minimized, drawing commands will hang indefinitely.
+> 💡 **Background Execution:** With pix-MCP v0.2.0's dedicated background thread, Pixelorama processes drawing and export commands even when minimized or running in the background.
 
 > ⛔ **Never call `draw_pixel` one at a time in a loop.** Always use `draw_pixels` with a batch array. A single `draw_pixels` call with 15,000 pixels is approximately 15,000× faster than individual calls.
 
@@ -339,4 +341,44 @@ await cmd("export_image", { path: "/home/user/output.png" });
 pkill -9 -f Pixelorama || true
 rm -f ~/.local/share/pixelorama/.running
 /path/to/Pixelorama.x86_64 --rendering-driver opengl3 --single-window &
+```
+
+---
+
+## 10. End-to-End Godot 4 Game Asset Pipeline
+
+AI agents can draw sprites, inspect them visually, and export directly into a Godot game project as ready-to-use native resources:
+
+### A. Exporting Animated Character Sprites to Godot:
+```javascript
+// 1. Draw your animation frames across timeline (frame 0, frame 1, frame 2...)
+// 2. Visually verify with capture_canvas_image
+// 3. Export directly into the Godot project folder
+await cmd("export_godot_spriteframes", {
+  target_dir: "/path/to/godot_project/assets/characters/",
+  sprite_name: "knight",
+  animation_name: "walk",
+  fps: 8,
+  loop: true
+});
+// Creates: knight_walk_0000.png, knight_walk_0001.png, ..., and knight_walk_frames.tres
+// In Godot: Attach knight_walk_frames.tres to an AnimatedSprite2D node!
+```
+
+### B. Creating and Exporting Tilemaps to Godot:
+```javascript
+// 1. Create a 4x4 grid of 16x16 tiles
+await cmd("create_tileset_canvas", { tile_size: 16, columns: 4, rows: 4, name: "Dungeon" });
+
+// 2. Draw terrain tiles (walls, floors, corners) in the specified tile coordinates
+// ...
+
+// 3. Export directly into the Godot project folder
+await cmd("export_godot_tileset", {
+  target_dir: "/path/to/godot_project/assets/tilesets/",
+  tileset_name: "dungeon_tiles",
+  tile_size: 16
+});
+// Creates: dungeon_tiles.png and dungeon_tiles.tres
+// In Godot: Assign dungeon_tiles.tres to the TileSet property of a TileMap or TileMapLayer node!
 ```

@@ -100,7 +100,7 @@ async function main() {
     // =========================================================================
     
     // 1. Change your target image file name here
-    const IMAGE_PATH = './solidar.png'; 
+    const IMAGE_PATH = './docs/examples/potato.png';
     
     // 2. Add as many specific RGB colors as you want to destroy/remove
     const bannedColors = [

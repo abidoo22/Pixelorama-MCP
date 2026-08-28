@@ -12,8 +12,13 @@ All MCP tools exposed by pix-MCP. They communicate via HTTP REST on `localhost:7
 3. [Layers](#3-layers)
 4. [Animation & Frames](#4-animation--frames)
 5. [Color & Palettes](#5-color--palettes)
-6. [Selections & Transforms](#6-selections--transforms)
+6. [Selections](#6-selections)
 7. [AI Helpers](#7-ai-helpers)
+8. [Vision & Inspection](#8-vision--inspection)
+9. [Image Importer & Pixelizer](#9-image-importer--pixelizer)
+10. [Procedural Game Art](#10-procedural-game-art)
+11. [Tilemaps & Tilesets](#11-tilemaps--tilesets)
+12. [Direct Godot 4 Resource Export](#12-direct-godot-4-resource-export)
 
 ---
 
@@ -467,3 +472,127 @@ Generates a structured, step-by-step drawing plan for an AI agent to execute usi
 | `style` | string | `"pico8"` | Palette style key |
 | `animated` | boolean | `false` | Include multi-frame animation guidance |
 | `frames` | number | `4` | Number of animation frames |
+
+---
+
+## 8. Vision & Inspection
+
+### `capture_canvas_image`
+Captures a visual screenshot of the current canvas (all layers blended) and returns it as a real MCP image artifact (`type: "image"`). Enables multimodal AI models (Claude 3.7, GPT-4o) to visually inspect their drawing, verify proportions, check lighting, and self-correct.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `frame` | number | current | Frame index to capture |
+
+---
+
+## 9. Image Importer & Pixelizer
+
+### `import_image`
+Imports any external PNG image into Pixelorama as clean pixel art. Automatically samples and removes background colors, supports color quantization to retro palettes (PICO-8, NES, Game Boy), and streams pixels with transparency into Pixelorama.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `file_path` | string | — | Absolute path to PNG image |
+| `target_width` | number | — | Optional target width in pixels |
+| `target_height` | number | — | Optional target height in pixels |
+| `remove_background` | boolean | `true` | Auto-detect and strip background |
+| `tolerance` | number | `20` | Color distance tolerance for background cleaning |
+| `palette` | string | — | Optional palette quantization (`"pico8"`, `"gameboy"`, `"nes"`) |
+| `create_new_canvas` | boolean | `true` | Create new canvas or draw on active cel |
+| `canvas_name` | string | `"Imported Sprite"` | Name for new canvas |
+
+---
+
+## 10. Procedural Game Art
+
+### `apply_outline`
+Automatically detects sprite borders on the active layer and applies an outline of specified color and thickness.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `color` | string | `"#000000"` | Outline hex color |
+| `thickness` | number | `1` | Outline thickness in pixels (1–4) |
+| `inside` | boolean | `false` | Inner outline (`true`) or outer border (`false`) |
+
+---
+
+### `mirror_layer`
+Mirrors or flips the active cel. Essential for symmetrical characters, monsters, weapons, armor, and chests.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `axis` | string | `"horizontal"` | `"horizontal"` or `"vertical"` |
+| `mode` | string | `"mirror_left_to_right"` | `"flip"`, `"mirror_left_to_right"`, `"mirror_right_to_left"`, or `"mirror_top_to_bottom"` |
+
+---
+
+### `generate_color_ramp`
+Calculates a 5-step shading ramp (`highlight`, `light`, `base`, `shadow`, `deepShadow`) from any base color using perceptual lighting and hue-shifting math.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `base_color` | string | ✅ | Base hex color (e.g. `"#e74c3c"`) |
+
+---
+
+### `apply_dithering`
+Fills a region with 2×2 checkerboard dithering between two colors for smooth retro shading transitions.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `x`, `y` | number | — | Top-left position |
+| `width`, `height` | number | — | Region size in pixels |
+| `color1`, `color2` | string | — | Two hex colors to blend |
+| `pattern` | string | `"checker_50"` | `"checker_50"`, `"light_25"`, or `"dense_75"` |
+
+---
+
+## 11. Tilemaps & Tilesets
+
+### `create_tileset_canvas`
+Creates a canvas partitioned into an $N \times M$ grid of uniform tiles (e.g. 4×4 grid of 16×16 tiles = 64×64 canvas).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `tile_size` | number | `16` | Size of individual tiles in pixels (e.g. 16 or 32) |
+| `columns` | number | `4` | Number of columns |
+| `rows` | number | `4` | Number of rows |
+| `name` | string | `"Tileset"` | Project name |
+
+---
+
+### `export_tileset`
+Exports the canvas as a tileset PNG and generates an accompanying JSON metadata file with tile coordinates and IDs.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `export_path` | string | — | Output file path for PNG |
+| `tile_size` | number | `16` | Size of tiles in pixels |
+| `generate_metadata` | boolean | `true` | Generate JSON metadata file |
+
+---
+
+## 12. Direct Godot 4 Resource Export
+
+### `export_godot_spriteframes`
+Exports animation frame PNGs directly into a Godot project folder and generates a native Godot 4 `SpriteFrames` text resource (`.tres`) ready to attach to an `AnimatedSprite2D` node.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `target_dir` | string | — | Destination directory (e.g. `"/path/to/godot_project/assets/characters/"`) |
+| `sprite_name` | string | — | Base name for sprite (e.g. `"knight"`) |
+| `animation_name` | string | `"default"` | Animation name in Godot (e.g. `"walk"`, `"idle"`) |
+| `fps` | number | `8` | Animation playback speed |
+| `loop` | boolean | `true` | Whether animation loops |
+
+---
+
+### `export_godot_tileset`
+Exports a tileset PNG and generates a native Godot 4 `TileSet` text resource (`.tres`) with a pre-configured `TileSetAtlasSource` ready to attach to a `TileMap` or `TileMapLayer` node.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `target_dir` | string | — | Destination directory (e.g. `"/path/to/godot_project/assets/tilesets/"`) |
+| `tileset_name` | string | — | Base name for tileset (e.g. `"dungeon_tiles"`) |
+| `tile_size` | number | `16` | Tile size in pixels (e.g. 16 or 32) |
