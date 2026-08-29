@@ -1,12 +1,14 @@
 /**
- * Color Tools
+ * Color & Palette Tools
  *
- * Tools for setting and querying the active foreground/background colors.
+ * Tools for setting/querying colors, palette management, color replacement,
+ * and HSV color adjustments.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 
 export function registerColorTools(server: McpServer): void {
   server.tool(
@@ -16,11 +18,7 @@ export function registerColorTools(server: McpServer): void {
       color: z
         .string()
         .describe("Color as hex string (e.g. '#FF5733', '#00FF00')"),
-      button: z
-        .number()
-        .int()
-        .min(0)
-        .max(1)
+      button: coerceInt(0, 1)
         .default(0)
         .describe("0 for foreground (left mouse button), 1 for background (right mouse button)"),
     },
@@ -64,6 +62,62 @@ export function registerColorTools(server: McpServer): void {
   );
 
   server.tool(
+    "color_replace",
+    "Replace all pixels of old_color with new_color on the active cel. Invaluable for palette swapping, elemental variants (fire/ice armor), shiny monsters, and skin tone adjustments.",
+    {
+      old_color: z.string().describe("Hex color to be replaced (e.g. '#e74c3c')"),
+      new_color: z.string().describe("New hex color to replace with (e.g. '#3498db')"),
+      tolerance: coerceFloat(0, 1)
+        .default(0.05)
+        .describe("Color distance tolerance (0.0 = exact match, 0.1 = includes near shades)"),
+    },
+    async ({ old_color, new_color, tolerance }) => {
+      const result = await sendCommand("color_replace", { old_color, new_color, tolerance });
+      if (result.success && result.data) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Replaced ${result.data.replaced_pixels} pixels from ${old_color} to ${new_color}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "adjust_hsv",
+    "Adjust Hue, Saturation, and Brightness/Value on the active cel. Perfect for environmental tints (night/dungeon darkness, poison green glow, frozen blue tint).",
+    {
+      hue_shift: coerceFloat(-180, 180)
+        .default(0)
+        .describe("Hue shift in degrees (-180 to +180)"),
+      saturation: coerceFloat(0, 5)
+        .default(1.0)
+        .describe("Saturation multiplier (0 = grayscale, 1.0 = original, 2.0 = highly vibrant)"),
+      value: coerceFloat(0, 5)
+        .default(1.0)
+        .describe("Value/Brightness multiplier (0 = black, 1.0 = original, 1.5 = brighter)"),
+    },
+    async ({ hue_shift, saturation, value }) => {
+      const result = await sendCommand("adjust_hsv", { hue_shift, saturation, value });
+      if (result.success && result.data) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Adjusted HSV on ${result.data.modified_pixels} pixels (Hue: ${hue_shift}°, Sat: ${saturation}x, Val: ${value}x)`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
     "get_palette_colors",
     "Get all colors in the currently active palette. Returns the palette name, dimensions, and all color swatches with their indices.",
     {},
@@ -97,9 +151,9 @@ export function registerColorTools(server: McpServer): void {
     "Create a new empty palette.",
     {
       name: z.string().describe("Name of the new palette"),
-      width: z.number().int().min(1).default(8).describe("Palette width"),
-      height: z.number().int().min(1).default(8).describe("Palette height"),
-      is_global: z.boolean().default(true).describe("If true, saves globally. If false, saves to project."),
+      width: coerceInt(1).default(8).describe("Palette width"),
+      height: coerceInt(1).default(8).describe("Palette height"),
+      is_global: coerceBool().default(true).describe("If true, saves globally. If false, saves to project."),
     },
     async ({ name, width, height, is_global }) => {
       const result = await sendCommand("create_palette", { name, width, height, is_global });
@@ -137,7 +191,7 @@ export function registerColorTools(server: McpServer): void {
     "set_palette_color",
     "Set the color at a specific index in the currently active palette.",
     {
-      index: z.number().int().min(0).describe("Index in the palette"),
+      index: coerceInt(0).describe("Index in the palette"),
       color: z.string().describe("Color hex string"),
     },
     async ({ index, color }) => {

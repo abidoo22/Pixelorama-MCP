@@ -30,8 +30,12 @@ func _register_tools() -> void:
 	_tool_registry["get_canvas_snapshot"] = Callable(self, "_cmd_get_canvas_snapshot")
 	_tool_registry["get_canvas_image_base64"] = Callable(self, "_cmd_get_canvas_image_base64")
 	_tool_registry["fit_viewport"] = Callable(self, "_cmd_fit_viewport")
+	_tool_registry["crop_to_content"] = Callable(self, "_cmd_crop_to_content")
+	_tool_registry["scale_canvas"] = Callable(self, "_cmd_scale_canvas")
 
-	# Drawing & Painting
+	# Drawing & Painting & History
+	_tool_registry["undo"] = Callable(self, "_cmd_undo")
+	_tool_registry["redo"] = Callable(self, "_cmd_redo")
 	_tool_registry["draw_pixel"] = Callable(self, "_cmd_draw_pixel")
 	_tool_registry["draw_pixels"] = Callable(self, "_cmd_draw_pixels")
 	_tool_registry["draw_rect"] = Callable(self, "_cmd_draw_rect")
@@ -46,6 +50,8 @@ func _register_tools() -> void:
 	# Colour
 	_tool_registry["set_color"] = Callable(self, "_cmd_set_color")
 	_tool_registry["get_color"] = Callable(self, "_cmd_get_color")
+	_tool_registry["color_replace"] = Callable(self, "_cmd_color_replace")
+	_tool_registry["adjust_hsv"] = Callable(self, "_cmd_adjust_hsv")
 
 	# Layers
 	_tool_registry["add_layer"] = Callable(self, "_cmd_add_layer")
@@ -349,11 +355,141 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 	}
 
 
+func _cmd_crop_to_content(_params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var min_x := 999999
+	var min_y := 999999
+	var max_x := -1
+	var max_y := -1
+	var w := int(project.size.x)
+	var h := int(project.size.y)
+
+	for f in project.frames:
+		for cel in f.cels:
+			if cel.get_class_name() == "PixelCel":
+				var img: Image = cel.get_image()
+				for y in range(h):
+					for x in range(w):
+						if img.get_pixel(x, y).a > 0.01:
+							min_x = mini(min_x, x)
+							min_y = mini(min_y, y)
+							max_x = maxi(max_x, x)
+							max_y = maxi(max_y, y)
+
+	if max_x == -1:
+		return {"success": false, "error": "Canvas is completely empty"}
+
+	var new_w := max_x - min_x + 1
+	var new_h := max_y - min_y + 1
+	var crop_rect := Rect2i(min_x, min_y, new_w, new_h)
+
+	for f in project.frames:
+		for cel in f.cels:
+			if cel.get_class_name() == "PixelCel":
+				var old_img: Image = cel.get_image()
+				var cropped_img := Image.create(new_w, new_h, false, Image.FORMAT_RGBA8)
+				cropped_img.blit_rect(old_img, crop_rect, Vector2i.ZERO)
+				cel.set_image(cropped_img)
+
+	project.size = Vector2i(new_w, new_h)
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.queue_redraw()
+		var cam = canvas.get("camera")
+		if cam and cam.has_method("fit_to_frame"):
+			cam.fit_to_frame()
+
+	return {"success": true, "data": {"original_size": [w, h], "new_size": [new_w, new_h], "crop_rect": [min_x, min_y, new_w, new_h]}}
 
 
-# ─────────────────────────────────────────────
-# DRAWING & PAINTING COMMANDS
-# ─────────────────────────────────────────────
+func _cmd_scale_canvas(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var factor: int = int(params.get("factor", 0))
+	var target_w: int = int(params.get("width", 0))
+	var target_h: int = int(params.get("height", 0))
+	var interpolation: int = Image.INTERPOLATE_NEAREST
+
+	var old_w := int(project.size.x)
+	var old_h := int(project.size.y)
+	var new_w := old_w
+	var new_h := old_h
+
+	if factor > 0:
+		new_w = old_w * factor
+		new_h = old_h * factor
+	elif target_w > 0 and target_h > 0:
+		new_w = target_w
+		new_h = target_h
+	else:
+		return {"success": false, "error": "Provide either 'factor' (> 0) or 'width' and 'height'"}
+
+	for f in project.frames:
+		for cel in f.cels:
+			if cel.get_class_name() == "PixelCel":
+				var img: Image = cel.get_image()
+				img.resize(new_w, new_h, interpolation)
+
+	project.size = Vector2i(new_w, new_h)
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.queue_redraw()
+		var cam = canvas.get("camera")
+		if cam and cam.has_method("fit_to_frame"):
+			cam.fit_to_frame()
+
+	return {"success": true, "data": {"original_size": [old_w, old_h], "new_size": [new_w, new_h]}}
+
+
+
+
+func _get_undo_redo() -> Object:
+	var project = _api.project.current_project
+	if project:
+		if "undo_redo" in project and project.undo_redo != null:
+			return project.undo_redo
+	var global = _api.general.get_global()
+	if global:
+		if "undo_redo" in global and global.undo_redo != null:
+			return global.undo_redo
+		if "current_project" in global and global.current_project != null:
+			if "undo_redo" in global.current_project and global.current_project.undo_redo != null:
+				return global.current_project.undo_redo
+	return null
+
+
+func _cmd_undo(_params: Dictionary) -> Dictionary:
+	var ur = _get_undo_redo()
+	if ur != null:
+		if ur.has_undo():
+			var action_name: String = ur.get_current_action_name()
+			ur.undo()
+			var canvas = _api.general.get_canvas()
+			if canvas:
+				canvas.queue_redraw()
+			return {"success": true, "data": {"message": "Undone: %s" % action_name, "action": action_name}}
+		else:
+			return {"success": false, "error": "Nothing to undo"}
+	return {"success": false, "error": "UndoRedo system not available"}
+
+
+func _cmd_redo(_params: Dictionary) -> Dictionary:
+	var ur = _get_undo_redo()
+	if ur != null:
+		if ur.has_redo():
+			ur.redo()
+			var canvas = _api.general.get_canvas()
+			if canvas:
+				canvas.queue_redraw()
+			return {"success": true, "data": {"message": "Redone action"}}
+		else:
+			return {"success": false, "error": "Nothing to redo"}
+	return {"success": false, "error": "UndoRedo system not available"}
 
 func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
 	var x: int = params.get("x", 0)
@@ -819,6 +955,64 @@ func _cmd_get_color(_params: Dictionary) -> Dictionary:
 	}
 
 
+func _cmd_color_replace(params: Dictionary) -> Dictionary:
+	var image := _get_current_image()
+	if image == null:
+		return {"success": false, "error": "No active pixel cel"}
+
+	var old_color := _parse_color(params, "old_color", Color.BLACK)
+	var new_color := _parse_color(params, "new_color", Color.WHITE)
+	var tolerance: float = float(params.get("tolerance", 0.05))
+
+	var w := image.get_width()
+	var h := image.get_height()
+	var modified_img := image.duplicate()
+	var replaced_count := 0
+
+	for y in range(h):
+		for x in range(w):
+			var px := image.get_pixel(x, y)
+			if px.a > 0.01:
+				var dist := sqrt(pow(px.r - old_color.r, 2) + pow(px.g - old_color.g, 2) + pow(px.b - old_color.b, 2))
+				if dist <= tolerance:
+					modified_img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, px.a))
+					replaced_count += 1
+
+	_commit_image_change(modified_img, "Color Replace")
+	return {"success": true, "data": {"replaced_pixels": replaced_count, "old_color": old_color.to_html(), "new_color": new_color.to_html()}}
+
+
+func _cmd_adjust_hsv(params: Dictionary) -> Dictionary:
+	var image := _get_current_image()
+	if image == null:
+		return {"success": false, "error": "No active pixel cel"}
+
+	var hue_shift: float = float(params.get("hue_shift", 0.0))
+	var saturation_mult: float = float(params.get("saturation", 1.0))
+	var value_mult: float = float(params.get("value", 1.0))
+
+	var h_norm: float = hue_shift / 360.0
+
+	var w := image.get_width()
+	var h := image.get_height()
+	var modified_img := image.duplicate()
+	var modified_count := 0
+
+	for y in range(h):
+		for x in range(w):
+			var px := image.get_pixel(x, y)
+			if px.a > 0.01:
+				var h_val := fposmod(px.h + h_norm, 1.0)
+				var s_val := clampf(px.s * saturation_mult, 0.0, 1.0)
+				var v_val := clampf(px.v * value_mult, 0.0, 1.0)
+				var new_col := Color.from_hsv(h_val, s_val, v_val, px.a)
+				modified_img.set_pixel(x, y, new_col)
+				modified_count += 1
+
+	_commit_image_change(modified_img, "Adjust HSV")
+	return {"success": true, "data": {"modified_pixels": modified_count, "hue_shift": hue_shift, "saturation": saturation_mult, "value": value_mult}}
+
+
 # ─────────────────────────────────────────────
 # LAYER COMMANDS
 # ─────────────────────────────────────────────
@@ -998,25 +1192,22 @@ func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
 	if src_index < 0 or src_index >= project.frames.size():
 		return {"success": false, "error": "Invalid frame index: %d" % src_index}
 
-	# Build a deep copy of the source frame's images into a new frame
-	var src_frame = project.frames[src_index]
-	var new_cels: Array = []
-	for i in range(src_frame.cels.size()):
-		var cel = src_frame.cels[i]
-		if cel.get_class_name() == "PixelCel":
-			var new_image := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
-			new_image.blit_rect(cel.get_image(), Rect2i(0, 0, int(project.size.x), int(project.size.y)), Vector2i.ZERO)
-			new_cels.append(cel.get_script().new(new_image))
-		else:
-			var layer = project.layers[i]
-			if layer.has_method("new_empty_cel"):
-				new_cels.append(layer.new_empty_cel())
-			else:
-				new_cels.append(cel.get_script().new())
-
-	var new_frame = Frame.new(new_cels, src_frame.duration)
 	var insert_at := src_index + 1
-	project.add_frames([new_frame], PackedInt32Array([insert_at]))
+	_api.project.add_new_frame(src_index)
+
+	# Copy pixel cel images from src_index into newly inserted frame (at insert_at)
+	var src_frame = project.frames[src_index]
+	var dst_frame = project.frames[insert_at]
+	for layer_idx in range(mini(src_frame.cels.size(), dst_frame.cels.size())):
+		var src_cel = src_frame.cels[layer_idx]
+		var dst_cel = dst_frame.cels[layer_idx]
+		if src_cel != null and dst_cel != null and src_cel.get_class_name() == "PixelCel" and dst_cel.get_class_name() == "PixelCel":
+			var src_img: Image = src_cel.get_image()
+			if src_img:
+				var copy_img := src_img.duplicate()
+				_api.project.set_pixelcel_image(copy_img, insert_at, layer_idx)
+
+	dst_frame.duration = src_frame.duration
 	return {"success": true, "data": {"duplicated_from": src_index, "inserted_at": insert_at, "total_frames": project.frames.size()}}
 
 

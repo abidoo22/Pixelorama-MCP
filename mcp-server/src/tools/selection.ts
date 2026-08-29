@@ -5,23 +5,19 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt } from "../utils/schema_helpers.js";
 
 export function registerSelectionTools(server: McpServer): void {
   server.tool(
     "select_rect",
     "Select a rectangular region of the canvas. Use operation to combine with existing selection.",
     {
-      x: z.number().int().describe("Top-left X coordinate of the selection"),
-      y: z.number().int().describe("Top-left Y coordinate of the selection"),
-      width: z.number().int().min(1).describe("Selection width"),
-      height: z.number().int().min(1).describe("Selection height"),
-      operation: z
-        .number()
-        .int()
-        .min(0)
-        .max(2)
+      x: coerceInt().describe("Top-left X coordinate of the selection"),
+      y: coerceInt().describe("Top-left Y coordinate of the selection"),
+      width: coerceInt(1).describe("Selection width"),
+      height: coerceInt(1).describe("Selection height"),
+      operation: coerceInt(0, 2)
         .default(0)
         .describe("0 = add to selection, 1 = subtract, 2 = intersect"),
     },

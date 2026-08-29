@@ -10,31 +10,20 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
 
 export function registerTilemapTools(server: McpServer): void {
   server.tool(
     "create_tileset_canvas",
     "Create a new canvas partitioned into a grid for drawing tilesets (e.g. 4x4 grid of 16x16 tiles = 64x64 canvas).",
     {
-      tile_size: z
-        .number()
-        .int()
-        .min(8)
-        .max(128)
+      tile_size: coerceInt(8, 128)
         .default(16)
         .describe("Size of individual tiles in pixels (e.g. 16 or 32)"),
-      columns: z
-        .number()
-        .int()
-        .min(1)
-        .max(64)
+      columns: coerceInt(1, 64)
         .default(4)
         .describe("Number of tile columns in the tileset grid"),
-      rows: z
-        .number()
-        .int()
-        .min(1)
-        .max(64)
+      rows: coerceInt(1, 64)
         .default(4)
         .describe("Number of tile rows in the tileset grid"),
       name: z
@@ -84,8 +73,8 @@ export function registerTilemapTools(server: McpServer): void {
     "Export the active canvas as a tileset PNG image and optionally generate a JSON metadata file defining tile coordinates, tile IDs, and collision flags.",
     {
       export_path: z.string().describe("Absolute file path for the tileset PNG (e.g. '/path/to/dungeon_tiles.png')"),
-      tile_size: z.number().int().min(8).max(128).default(16).describe("Tile size in pixels"),
-      generate_metadata: z.boolean().default(true).describe("If true, generates a .json metadata file alongside the PNG"),
+      tile_size: coerceInt(8, 128).default(16).describe("Tile size in pixels"),
+      generate_metadata: coerceBool().default(true).describe("If true, generates a .json metadata file alongside the PNG"),
     },
     async ({ export_path, tile_size, generate_metadata }) => {
       const infoRes = await sendCommand("get_canvas_info", {});

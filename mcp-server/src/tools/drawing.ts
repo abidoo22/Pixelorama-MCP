@@ -1,20 +1,63 @@
 /**
- * Drawing & Painting Tools
+ * Drawing, Painting & History Tools
  *
- * Tools for drawing pixels, lines, rectangles, ellipses, and flood-filling.
+ * Tools for drawing pixels, lines, rectangles, ellipses, polygons, flood-filling,
+ * and undo/redo operations.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceBool, safeJsonArray } from "../utils/schema_helpers.js";
 
 export function registerDrawingTools(server: McpServer): void {
+  // ── undo ────────────────────────────────────────────────────────────
+  server.tool(
+    "undo",
+    "Undo the last drawing, layer, or cel modification in Pixelorama.",
+    {},
+    async () => {
+      const result = await sendCommand("undo", {});
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `↩️ ${result.data?.message ?? "Undone last action"}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ── redo ────────────────────────────────────────────────────────────
+  server.tool(
+    "redo",
+    "Redo the previously undone action in Pixelorama.",
+    {},
+    async () => {
+      const result = await sendCommand("redo", {});
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `↪️ ${result.data?.message ?? "Redone action"}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ── draw_pixel ──────────────────────────────────────────────────────
   server.tool(
     "draw_pixel",
     "Set a single pixel at the given (x, y) coordinates to the specified RGBA color on the current layer.",
     {
-      x: z.number().int().describe("X coordinate (0-based, left to right)"),
-      y: z.number().int().describe("Y coordinate (0-based, top to bottom)"),
+      x: coerceInt().describe("X coordinate (0-based, left to right)"),
+      y: coerceInt().describe("Y coordinate (0-based, top to bottom)"),
       color: z
         .string()
         .default("#000000")
@@ -35,14 +78,15 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── draw_line ───────────────────────────────────────────────────────
   server.tool(
     "draw_line",
     "Draw a straight line from point (x1, y1) to point (x2, y2) using Bresenham's algorithm.",
     {
-      x1: z.number().int().describe("Start X coordinate"),
-      y1: z.number().int().describe("Start Y coordinate"),
-      x2: z.number().int().describe("End X coordinate"),
-      y2: z.number().int().describe("End Y coordinate"),
+      x1: coerceInt().describe("Start X coordinate"),
+      y1: coerceInt().describe("Start Y coordinate"),
+      x2: coerceInt().describe("End X coordinate"),
+      y2: coerceInt().describe("End Y coordinate"),
       color: z
         .string()
         .default("#000000")
@@ -69,20 +113,20 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── draw_rect ───────────────────────────────────────────────────────
   server.tool(
     "draw_rect",
     "Draw a rectangle on the current layer. Can be filled or outline only.",
     {
-      x: z.number().int().describe("Top-left X coordinate"),
-      y: z.number().int().describe("Top-left Y coordinate"),
-      width: z.number().int().min(1).describe("Rectangle width in pixels"),
-      height: z.number().int().min(1).describe("Rectangle height in pixels"),
+      x: coerceInt().describe("Top-left X coordinate"),
+      y: coerceInt().describe("Top-left Y coordinate"),
+      width: coerceInt(1).describe("Rectangle width in pixels"),
+      height: coerceInt(1).describe("Rectangle height in pixels"),
       color: z
         .string()
         .default("#000000")
         .describe("Rectangle color as hex string"),
-      filled: z
-        .boolean()
+      filled: coerceBool()
         .default(true)
         .describe("If true, fill the rectangle; if false, draw outline only"),
     },
@@ -108,20 +152,20 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── draw_ellipse ────────────────────────────────────────────────────
   server.tool(
     "draw_ellipse",
     "Draw an ellipse (or circle if rx == ry) centered at (cx, cy) with the given radii.",
     {
-      cx: z.number().int().describe("Center X coordinate"),
-      cy: z.number().int().describe("Center Y coordinate"),
-      rx: z.number().int().min(1).describe("Horizontal radius in pixels"),
-      ry: z.number().int().min(1).describe("Vertical radius in pixels"),
+      cx: coerceInt().describe("Center X coordinate"),
+      cy: coerceInt().describe("Center Y coordinate"),
+      rx: coerceInt(1).describe("Horizontal radius in pixels"),
+      ry: coerceInt(1).describe("Vertical radius in pixels"),
       color: z
         .string()
         .default("#000000")
         .describe("Ellipse color as hex string"),
-      filled: z
-        .boolean()
+      filled: coerceBool()
         .default(true)
         .describe("If true, fill the ellipse; if false, draw outline only"),
     },
@@ -147,12 +191,13 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── fill_area ───────────────────────────────────────────────────────
   server.tool(
     "fill_area",
     "Flood-fill a contiguous area starting from the seed pixel at (x, y). Fills all connected pixels of the same color with the new color.",
     {
-      x: z.number().int().describe("Seed X coordinate for flood fill"),
-      y: z.number().int().describe("Seed Y coordinate for flood fill"),
+      x: coerceInt().describe("Seed X coordinate for flood fill"),
+      y: coerceInt().describe("Seed Y coordinate for flood fill"),
       color: z
         .string()
         .default("#000000")
@@ -173,20 +218,19 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── draw_pixels ─────────────────────────────────────────────────────
   server.tool(
     "draw_pixels",
     "Batch draw multiple pixels in a single operation. Much faster than calling draw_pixel repeatedly. All pixels are committed as a single undoable action. Use this for complex shapes, sprite art, or any multi-pixel drawing.",
     {
-      pixels: z
-        .array(
-          z.object({
-            x: z.number().int().describe("X coordinate"),
-            y: z.number().int().describe("Y coordinate"),
-            color: z.string().describe("Pixel color as hex string"),
-          })
-        )
-        .min(1)
-        .describe("Array of pixel objects, each with x, y, and color"),
+      pixels: safeJsonArray(
+        z.object({
+          x: coerceInt().describe("X coordinate"),
+          y: coerceInt().describe("Y coordinate"),
+          color: z.string().describe("Pixel color as hex string"),
+        }),
+        1
+      ).describe("Array of pixel objects, each with x, y, and color"),
     },
     async ({ pixels }) => {
       const result = await sendCommand("draw_pixels", { pixels });
@@ -208,32 +252,21 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── get_canvas_snapshot ─────────────────────────────────────────────
   server.tool(
     "get_canvas_snapshot",
     "Get a snapshot of the current canvas content. Returns pixel data as a color-indexed grid. Useful for inspecting what's currently drawn before making changes. Keep the region small (e.g. 32x32) for faster response.",
     {
-      x: z
-        .number()
-        .int()
+      x: coerceInt()
         .default(0)
         .describe("Top-left X coordinate of the region to snapshot"),
-      y: z
-        .number()
-        .int()
+      y: coerceInt()
         .default(0)
         .describe("Top-left Y coordinate of the region to snapshot"),
-      width: z
-        .number()
-        .int()
-        .min(1)
-        .max(128)
+      width: coerceInt(1, 128)
         .default(32)
         .describe("Width of the snapshot region (max 128)"),
-      height: z
-        .number()
-        .int()
-        .min(1)
-        .max(128)
+      height: coerceInt(1, 128)
         .default(32)
         .describe("Height of the snapshot region (max 128)"),
     },
@@ -266,64 +299,70 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── draw_path ───────────────────────────────────────────────────────
   server.tool(
     "draw_path",
-    "Draw a path of connected lines.",
+    "Draw a continuous multi-segment line through an array of points in order.",
     {
-      points: z
-        .array(
-          z.object({
-            x: z.number().int(),
-            y: z.number().int(),
-          })
-        )
-        .min(2)
-        .describe("Array of point objects {x, y}"),
-      closed: z
-        .boolean()
+      points: safeJsonArray(
+        z.object({
+          x: coerceInt().describe("X coordinate"),
+          y: coerceInt().describe("Y coordinate"),
+        }),
+        2
+      ).describe("Array of points to connect with lines [{x, y}, ...]"),
+      color: z
+        .string()
+        .default("#000000")
+        .describe("Line color as hex string"),
+      closed: coerceBool()
         .default(false)
-        .describe("If true, a line is drawn from the last point back to the first"),
-      color: z.string().default("#000000").describe("Path color as hex string"),
+        .describe("If true, connect the last point back to the first"),
     },
-    async ({ points, closed, color }) => {
-      const result = await sendCommand("draw_path", { points, closed, color });
+    async ({ points, color, closed }) => {
+      const result = await sendCommand("draw_path", { points, color, closed });
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Path drawn with ${points.length} points` : `❌ ${result.error}`,
+            text: result.success
+              ? `✅ Path drawn with ${points.length} points (${closed ? "closed" : "open"})`
+              : `❌ ${result.error}`,
           },
         ],
       };
     }
   );
 
+  // ── draw_polygon ────────────────────────────────────────────────────
   server.tool(
     "draw_polygon",
-    "Draw a polygon defined by an array of points. Can be filled or outline only.",
+    "Draw a polygon from an array of vertices. Can be filled or outline only.",
     {
-      points: z
-        .array(
-          z.object({
-            x: z.number().int(),
-            y: z.number().int(),
-          })
-        )
-        .min(3)
-        .describe("Array of point objects {x, y}"),
-      filled: z
-        .boolean()
+      points: safeJsonArray(
+        z.object({
+          x: coerceInt().describe("X coordinate"),
+          y: coerceInt().describe("Y coordinate"),
+        }),
+        3
+      ).describe("Array of vertices [{x, y}, ...] (minimum 3)"),
+      color: z
+        .string()
+        .default("#000000")
+        .describe("Polygon color as hex string"),
+      filled: coerceBool()
         .default(true)
         .describe("If true, fill the polygon; if false, draw outline only"),
-      color: z.string().default("#000000").describe("Polygon color as hex string"),
     },
-    async ({ points, filled, color }) => {
-      const result = await sendCommand("draw_polygon", { points, filled, color });
+    async ({ points, color, filled }) => {
+      const result = await sendCommand("draw_polygon", { points, color, filled });
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Polygon drawn with ${points.length} points (${filled ? "filled" : "outline"})` : `❌ ${result.error}`,
+            text: result.success
+              ? `✅ Polygon drawn with ${points.length} vertices (${filled ? "filled" : "outline"})`
+              : `❌ ${result.error}`,
           },
         ],
       };

@@ -8,6 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
 
 // Helper: Convert Hex to RGB
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -63,15 +64,10 @@ export function registerProceduralTools(server: McpServer): void {
         .string()
         .default("#000000")
         .describe("Outline hex color (e.g. '#000000' or '#1a1020')"),
-      thickness: z
-        .number()
-        .int()
-        .min(1)
-        .max(4)
+      thickness: coerceInt(1, 4)
         .default(1)
         .describe("Outline thickness in pixels (1-4, default: 1)"),
-      inside: z
-        .boolean()
+      inside: coerceBool()
         .default(false)
         .describe("If true, replaces outer pixels of the sprite; if false, expands into transparent pixels around the sprite"),
     },
@@ -141,10 +137,10 @@ export function registerProceduralTools(server: McpServer): void {
     "apply_dithering",
     "Fill a rectangular area with a 2x2 checkerboard dither pattern between two colors to blend shading smoothly without color noise.",
     {
-      x: z.number().int().describe("Top-left X coordinate"),
-      y: z.number().int().describe("Top-left Y coordinate"),
-      width: z.number().int().min(1).describe("Width of dither region"),
-      height: z.number().int().min(1).describe("Height of dither region"),
+      x: coerceInt().describe("Top-left X coordinate"),
+      y: coerceInt().describe("Top-left Y coordinate"),
+      width: coerceInt(1).describe("Width of dither region"),
+      height: coerceInt(1).describe("Height of dither region"),
       color1: z.string().describe("First hex color (e.g. highlight or base)"),
       color2: z.string().describe("Second hex color (e.g. shadow)"),
       pattern: z.enum(["checker_50", "light_25", "dense_75"]).default("checker_50").describe("Dither density"),

@@ -11,6 +11,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 
 export function registerGodotExportTools(server: McpServer): void {
   // ── export_godot_spriteframes ───────────────────────────────────────────
@@ -21,8 +22,8 @@ export function registerGodotExportTools(server: McpServer): void {
       target_dir: z.string().describe("Target folder in the Godot project (e.g. '/home/user/my_game/assets/characters/')"),
       sprite_name: z.string().describe("Base name for the sprite (e.g. 'knight' or 'slime')"),
       animation_name: z.string().default("default").describe("Name of the animation track in Godot (e.g. 'idle', 'walk', 'attack')"),
-      fps: z.number().default(8).describe("Animation playback speed in frames per second"),
-      loop: z.boolean().default(true).describe("Whether the animation loops"),
+      fps: coerceFloat(0.1).default(8).describe("Animation playback speed in frames per second"),
+      loop: coerceBool().default(true).describe("Whether the animation loops"),
     },
     async ({ target_dir, sprite_name, animation_name, fps, loop }) => {
       // Ensure target directory exists
@@ -98,7 +99,7 @@ ${frameEntries}],
     {
       target_dir: z.string().describe("Target folder in the Godot project (e.g. '/home/user/my_game/assets/tilesets/')"),
       tileset_name: z.string().describe("Base name for the tileset (e.g. 'dungeon_tiles' or 'overworld')"),
-      tile_size: z.number().int().min(8).max(128).default(16).describe("Tile width and height in pixels"),
+      tile_size: coerceInt(8, 128).default(16).describe("Tile width and height in pixels"),
     },
     async ({ target_dir, tileset_name, tile_size }) => {
       // Ensure target directory exists

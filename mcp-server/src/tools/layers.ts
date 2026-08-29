@@ -1,12 +1,13 @@
 /**
  * Layer Tools
  *
- * Tools for adding layers and querying layer information.
+ * Tools for adding layers, deleting layers, opacity, blend modes, and visibility.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 
 export function registerLayerTools(server: McpServer): void {
   server.tool(
@@ -17,16 +18,10 @@ export function registerLayerTools(server: McpServer): void {
         .string()
         .default("")
         .describe("Layer name (empty for auto-naming)"),
-      type: z
-        .number()
-        .int()
-        .min(0)
-        .max(2)
+      type: coerceInt(0, 2)
         .default(0)
         .describe("Layer type: 0 = Pixel, 1 = Group, 2 = 3D"),
-      above_layer: z
-        .number()
-        .int()
+      above_layer: coerceInt(0)
         .optional()
         .describe("Insert above this layer index (defaults to current layer)"),
     },
@@ -91,7 +86,7 @@ export function registerLayerTools(server: McpServer): void {
     "delete_layer",
     "Delete a layer from the project by its index.",
     {
-      index: z.number().int().min(0).describe("Layer index to delete"),
+      index: coerceInt(0).describe("Layer index to delete"),
     },
     async ({ index }) => {
       const result = await sendCommand("delete_layer", { index });
@@ -110,8 +105,8 @@ export function registerLayerTools(server: McpServer): void {
     "set_layer_opacity",
     "Set the opacity of a layer (0.0 to 1.0).",
     {
-      index: z.number().int().min(0).describe("Layer index"),
-      opacity: z.number().min(0).max(1).describe("Opacity (0.0 = transparent, 1.0 = opaque)"),
+      index: coerceInt(0).describe("Layer index"),
+      opacity: coerceFloat(0, 1).describe("Opacity (0.0 = transparent, 1.0 = opaque)"),
     },
     async ({ index, opacity }) => {
       const result = await sendCommand("set_layer_opacity", { index, opacity });
@@ -130,8 +125,8 @@ export function registerLayerTools(server: McpServer): void {
     "set_layer_blend_mode",
     "Set the blend mode of a layer (0 = Normal, 1 = Erase, 2 = Darken, 3 = Multiply, 4 = Color Burn, etc.).",
     {
-      index: z.number().int().min(0).describe("Layer index"),
-      blend_mode: z.number().int().min(0).max(21).describe("Blend mode enum value (0 = Normal)"),
+      index: coerceInt(0).describe("Layer index"),
+      blend_mode: coerceInt(0, 21).describe("Blend mode enum value (0 = Normal)"),
     },
     async ({ index, blend_mode }) => {
       const result = await sendCommand("set_layer_blend_mode", { index, blend_mode });
@@ -150,8 +145,8 @@ export function registerLayerTools(server: McpServer): void {
     "set_layer_visibility",
     "Set the visibility of a layer.",
     {
-      index: z.number().int().min(0).describe("Layer index"),
-      visible: z.boolean().describe("True to show layer, false to hide it"),
+      index: coerceInt(0).describe("Layer index"),
+      visible: coerceBool().describe("True to show layer, false to hide it"),
     },
     async ({ index, visible }) => {
       const result = await sendCommand("set_layer_visibility", { index, visible });

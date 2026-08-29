@@ -1,14 +1,14 @@
-# 🚀 Getting Started with pix-MCP
+# 🚀 Getting Started with Pixelorama-MCP
 
-Welcome to **pix-MCP**! This guide covers everything you need: installing the server, connecting an AI client, running drawing scripts manually, and importing existing images into Pixelorama.
+Welcome to **Pixelorama-MCP**! This guide covers everything you need: installing the server, connecting an AI client, running drawing scripts manually, and importing existing images into Pixelorama.
 
 ---
 
 ## 📋 Prerequisites
 
 - **Node.js** v18 or higher — [nodejs.org](https://nodejs.org/)
-- **Pixelorama** v1.1.10-stable — [pixelorama.org](https://www.pixelorama.org/)
-- **Godot v4.6** *(only if you want to modify or recompile the bridge plugin)*
+- **Pixelorama** v1.1.10-stable or higher — [pixelorama.org](https://www.pixelorama.org/)
+- **Godot v4.6+** *(only if you want to modify or recompile the bridge plugin)*
 
 ---
 
@@ -44,12 +44,10 @@ Expected response:
 {
   "status": "ok",
   "server": "pix-mcp-bridge",
-  "pixelorama_version": "v1.1.10-stable",
-  "api_version": 8
+  "pixelorama_version": "v1.2.1-stable",
+  "api_version": 9
 }
 ```
-
-> ⚠️ **Keep Pixelorama visible and not minimized.** Godot throttles its process loop when the window is hidden, which causes drawing commands to hang or slow down significantly.
 
 ---
 
@@ -65,23 +63,23 @@ Edit your config file:
 ```json
 {
   "mcpServers": {
-    "pix-mcp": {
+    "pixelorama": {
       "command": "node",
-      "args": ["/absolute/path/to/pix-MCP/mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/Pixelorama-MCP/mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see pix-mcp appear in the tools list.
+Restart Claude Desktop. You should see pixelorama appear in the tools list.
 
 ### Cursor IDE
 
 1. Go to **Settings → Features → MCP**
 2. Click **+ Add New MCP Server**
-3. Set **Name** to `pix-mcp`, **Type** to `command`, **Command** to:
+3. Set **Name** to `pixelorama`, **Type** to `command`, **Command** to:
    ```
-   node /absolute/path/to/pix-MCP/mcp-server/dist/index.js
+   node /absolute/path/to/Pixelorama-MCP/mcp-server/dist/index.js
    ```
 4. Save and verify the status turns green
 

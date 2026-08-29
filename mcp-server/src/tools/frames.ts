@@ -1,5 +1,5 @@
 /**
- * Frame / Animation Tools  — Milestone 3
+ * Frame / Animation Tools
  *
  * Full animation support: add, delete, duplicate, navigate, set duration/fps,
  * operate on individual cels, and export frames or spritesheet.
@@ -8,6 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceFloat } from "../utils/schema_helpers.js";
 
 export function registerFrameTools(server: McpServer): void {
   // ── FRAME QUERIES ──────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ export function registerFrameTools(server: McpServer): void {
     "set_fps",
     "Set the animation playback speed in frames per second.",
     {
-      fps: z.number().positive().describe("Frames per second (e.g. 12, 24)"),
+      fps: coerceFloat(0.1).describe("Frames per second (e.g. 12, 24)"),
     },
     async ({ fps }) => {
       const result = await sendCommand("set_fps", { fps });
@@ -82,9 +83,7 @@ export function registerFrameTools(server: McpServer): void {
     "add_frame",
     "Add a new blank animation frame after the specified frame index.",
     {
-      after_frame: z
-        .number()
-        .int()
+      after_frame: coerceInt(0)
         .optional()
         .describe("Insert after this frame index (defaults to current frame)"),
     },
@@ -109,9 +108,7 @@ export function registerFrameTools(server: McpServer): void {
     "delete_frame",
     "Delete an animation frame by index. Cannot delete the last remaining frame.",
     {
-      index: z
-        .number()
-        .int()
+      index: coerceInt(0)
         .optional()
         .describe("Frame index to delete (defaults to current frame)"),
     },
@@ -136,9 +133,7 @@ export function registerFrameTools(server: McpServer): void {
     "duplicate_frame",
     "Duplicate an animation frame, inserting the copy immediately after the original. All layer pixel data is deep-copied.",
     {
-      index: z
-        .number()
-        .int()
+      index: coerceInt(0)
         .optional()
         .describe("Frame index to duplicate (defaults to current frame)"),
     },
@@ -163,14 +158,10 @@ export function registerFrameTools(server: McpServer): void {
     "set_frame_duration",
     "Set the duration multiplier of a frame (relative to 1/fps). E.g. 2 means the frame lasts twice as long.",
     {
-      index: z
-        .number()
-        .int()
+      index: coerceInt(0)
         .optional()
         .describe("Frame index (defaults to current frame)"),
-      duration: z
-        .number()
-        .positive()
+      duration: coerceFloat(0.01)
         .describe("Duration multiplier (1.0 = normal speed, 2.0 = half speed)"),
     },
     async ({ index, duration }) => {
@@ -194,7 +185,7 @@ export function registerFrameTools(server: McpServer): void {
     "switch_frame",
     "Switch the active animation frame (makes it current for drawing).",
     {
-      index: z.number().int().min(0).describe("Frame index to switch to"),
+      index: coerceInt(0).describe("Frame index to switch to"),
     },
     async ({ index }) => {
       const result = await sendCommand("switch_frame", { index });
@@ -217,16 +208,8 @@ export function registerFrameTools(server: McpServer): void {
     "switch_cel",
     "Switch the active cel (frame + layer combination). This controls which cel subsequent drawing commands target.",
     {
-      frame: z
-        .number()
-        .int()
-        .min(0)
-        .describe("Frame index"),
-      layer: z
-        .number()
-        .int()
-        .min(0)
-        .describe("Layer index"),
+      frame: coerceInt(0).describe("Frame index"),
+      layer: coerceInt(0).describe("Layer index"),
     },
     async ({ frame, layer }) => {
       const result = await sendCommand("switch_cel", { frame, layer });
@@ -247,10 +230,10 @@ export function registerFrameTools(server: McpServer): void {
     "copy_cel",
     "Copy pixel data from one cel to another. Useful for animation — copy frame 0 to frame 1 then make small changes.",
     {
-      src_frame: z.number().int().min(0).describe("Source frame index"),
-      src_layer: z.number().int().min(0).describe("Source layer index"),
-      dst_frame: z.number().int().min(0).describe("Destination frame index"),
-      dst_layer: z.number().int().min(0).describe("Destination layer index"),
+      src_frame: coerceInt(0).describe("Source frame index"),
+      src_layer: coerceInt(0).describe("Source layer index"),
+      dst_frame: coerceInt(0).describe("Destination frame index"),
+      dst_layer: coerceInt(0).describe("Destination layer index"),
     },
     async ({ src_frame, src_layer, dst_frame, dst_layer }) => {
       const result = await sendCommand("copy_cel", {
@@ -276,16 +259,10 @@ export function registerFrameTools(server: McpServer): void {
     "clear_cel",
     "Clear all pixels in a cel, making it fully transparent.",
     {
-      frame: z
-        .number()
-        .int()
-        .min(0)
+      frame: coerceInt(0)
         .optional()
         .describe("Frame index (defaults to current frame)"),
-      layer: z
-        .number()
-        .int()
-        .min(0)
+      layer: coerceInt(0)
         .optional()
         .describe("Layer index (defaults to current layer)"),
     },
@@ -322,22 +299,13 @@ export function registerFrameTools(server: McpServer): void {
         .enum(["frames", "spritesheet"])
         .default("frames")
         .describe("Export mode: 'frames' or 'spritesheet'"),
-      columns: z
-        .number()
-        .int()
-        .min(1)
+      columns: coerceInt(1)
         .optional()
         .describe("Spritesheet columns (only for 'spritesheet' mode, defaults to frame count)"),
-      start_frame: z
-        .number()
-        .int()
-        .min(0)
+      start_frame: coerceInt(0)
         .optional()
         .describe("First frame to export (only for 'frames' mode, defaults to 0)"),
-      end_frame: z
-        .number()
-        .int()
-        .min(0)
+      end_frame: coerceInt(0)
         .optional()
         .describe("Last frame to export (only for 'frames' mode, defaults to last frame)"),
     },

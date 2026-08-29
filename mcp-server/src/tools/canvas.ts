@@ -1,30 +1,24 @@
 /**
  * Canvas & Project Tools
  *
- * Tools for creating canvases, getting project info, saving, and exporting.
+ * Tools for creating canvases, getting project info, saving, exporting,
+ * auto-cropping, and integer scaling.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt } from "../utils/schema_helpers.js";
 
 export function registerCanvasTools(server: McpServer): void {
   server.tool(
     "create_canvas",
     "Create a new canvas/project in Pixelorama with the specified dimensions, name, and optional fill color.",
     {
-      width: z
-        .number()
-        .int()
-        .min(1)
-        .max(4096)
+      width: coerceInt(1, 4096)
         .default(64)
         .describe("Canvas width in pixels"),
-      height: z
-        .number()
-        .int()
-        .min(1)
-        .max(4096)
+      height: coerceInt(1, 4096)
         .default(64)
         .describe("Canvas height in pixels"),
       name: z
@@ -108,10 +102,7 @@ export function registerCanvasTools(server: McpServer): void {
     "Export the current canvas as a PNG image to the specified file path.",
     {
       path: z.string().describe("Absolute file path to save the PNG (e.g. '/home/user/sprite.png')"),
-      frame: z
-        .number()
-        .int()
-        .min(0)
+      frame: coerceInt(0)
         .default(0)
         .describe("Frame index to export (0-based)"),
     },
@@ -148,5 +139,64 @@ export function registerCanvasTools(server: McpServer): void {
       };
     }
   );
-}
 
+  server.tool(
+    "crop_to_content",
+    "Automatically trim and crop the canvas to fit the bounding box of non-transparent pixels. Perfect for removing excess blank space around drawn sprites.",
+    {},
+    async () => {
+      const result = await sendCommand("crop_to_content", {});
+      if (result.success && result.data) {
+        const orig = result.data.original_size as number[];
+        const nsize = result.data.new_size as number[];
+        const crop = result.data.crop_rect as number[];
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Canvas cropped to content: ${orig[0]}×${orig[1]} → ${nsize[0]}×${nsize[1]} pixels (Bounds: x=${crop[0]}, y=${crop[1]})`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "scale_canvas",
+    "Scale the canvas using pixel-perfect nearest-neighbor interpolation. Use integer factors (2, 3, 4) for crisp retro scaling.",
+    {
+      factor: coerceInt(1, 16)
+        .optional()
+        .describe("Integer scaling factor (e.g. 2 for 2x, 4 for 4x upscale)"),
+      width: coerceInt(1, 8192)
+        .optional()
+        .describe("Explicit target width in pixels"),
+      height: coerceInt(1, 8192)
+        .optional()
+        .describe("Explicit target height in pixels"),
+    },
+    async ({ factor, width, height }) => {
+      const params: Record<string, unknown> = {};
+      if (factor !== undefined) params.factor = factor;
+      if (width !== undefined) params.width = width;
+      if (height !== undefined) params.height = height;
+
+      const result = await sendCommand("scale_canvas", params);
+      if (result.success && result.data) {
+        const orig = result.data.original_size as number[];
+        const nsize = result.data.new_size as number[];
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Canvas scaled from ${orig[0]}×${orig[1]} to ${nsize[0]}×${nsize[1]} pixels`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+}

@@ -10,6 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
 
 // ── Built-in pixel-art palettes ────────────────────────────────────────────
 const BUILTIN_PALETTES: Record<string, { name: string; description: string; colors: Array<{ role: string; hex: string }> }> = {
@@ -264,9 +265,9 @@ export function registerAiHelperTools(server: McpServer): void {
     "describe_canvas",
     "Get a comprehensive description of the current canvas state — dimensions, layers, frames, FPS, and a pixel-color snapshot. Use this before drawing to understand what's already there.",
     {
-      snapshot_width: z.number().int().min(1).max(64).default(32)
+      snapshot_width: coerceInt(1, 64).default(32)
         .describe("Width of pixel snapshot to include (keep small, ≤64)"),
-      snapshot_height: z.number().int().min(1).max(64).default(32)
+      snapshot_height: coerceInt(1, 64).default(32)
         .describe("Height of pixel snapshot to include"),
     },
     async ({ snapshot_width, snapshot_height }) => {
@@ -349,7 +350,7 @@ export function registerAiHelperTools(server: McpServer): void {
       theme: z.string().describe(
         "Mood or style — e.g. 'forest', 'ocean', 'fire', 'retro', 'NES', 'Game Boy', 'PICO-8', 'cyberpunk', 'RPG dungeon'"
       ),
-      list_all: z.boolean().default(false)
+      list_all: coerceBool().default(false)
         .describe("If true, list all available built-in palettes instead of matching"),
     },
     async ({ theme, list_all }) => {
@@ -392,15 +393,15 @@ export function registerAiHelperTools(server: McpServer): void {
       description: z.string().describe(
         "What to draw — e.g. 'a red mushroom with white spots, Mario style', 'a blue gem', 'a walking human character (4 frames)'"
       ),
-      width: z.number().int().min(8).max(128).default(16)
+      width: coerceInt(8, 128).default(16)
         .describe("Canvas width in pixels"),
-      height: z.number().int().min(8).max(128).default(16)
+      height: coerceInt(8, 128).default(16)
         .describe("Canvas height in pixels"),
       style: z.string().default("pico8")
         .describe("Palette/style — e.g. 'nes', 'gameboy', 'pico8', 'forest', 'retro'"),
-      animated: z.boolean().default(false)
+      animated: coerceBool().default(false)
         .describe("If true, include multi-frame animation guidance"),
-      frames: z.number().int().min(2).max(16).default(4)
+      frames: coerceInt(2, 16).default(4)
         .describe("Number of animation frames (only used if animated=true)"),
     },
     async ({ description, width, height, style, animated, frames }) => {

@@ -1,7 +1,7 @@
 # 📚 Agentic Drawing Playbook
-### How to Draw Pixel Art with pix-MCP — For AI Agents & Developer Scripts
+### How to Draw Pixel Art with Pixelorama-MCP — For AI Agents & Developer Scripts
 
-This guide is written for **AI agents and autonomous scripts** connecting to pix-MCP. Follow it and your first draw attempt will produce high-quality results.
+This guide is written for **AI agents and autonomous scripts** connecting to Pixelorama-MCP. Follow it and your first draw attempt will produce high-quality results.
 
 ---
 
@@ -21,7 +21,7 @@ Always execute drawing tasks in this exact order:
 9. Export to Godot      → export_godot_spriteframes / export_godot_tileset
 ```
 
-> 💡 **Background Execution:** With pix-MCP v0.2.0's dedicated background thread, Pixelorama processes drawing and export commands even when minimized or running in the background.
+> 💡 **Background Execution:** With Pixelorama-MCP's dedicated background thread, Pixelorama processes drawing and export commands even when minimized or running in the background.
 
 > ⛔ **Never call `draw_pixel` one at a time in a loop.** Always use `draw_pixels` with a batch array. A single `draw_pixels` call with 15,000 pixels is approximately 15,000× faster than individual calls.
 

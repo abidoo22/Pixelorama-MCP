@@ -1,6 +1,6 @@
-# 🛠️ pix-MCP Tool Reference
+# 🛠️ Pixelorama-MCP Tool Reference
 
-All MCP tools exposed by pix-MCP. They communicate via HTTP REST on `localhost:7373` to control Pixelorama v1.1.10 programmatically.
+All MCP tools exposed by Pixelorama-MCP. They communicate via HTTP REST on `localhost:7373` to control Pixelorama programmatically.
 
 **Quick rule:** Use `draw_pixels` (batch) for all drawing — never `draw_pixel` in a loop.
 
@@ -118,7 +118,44 @@ Centers and fits the canvas in the Pixelorama viewport. Always call this at the 
 
 ---
 
+### `crop_to_content`
+Automatically trims and crops the canvas to fit the bounding box of all non-transparent pixels. Essential for removing blank padding after drawing sprites.
+
+```json
+{ "success": true, "data": { "original_size": [64, 64], "new_size": [24, 32], "crop_rect": [20, 16, 24, 32] } }
+```
+
+---
+
+### `scale_canvas`
+Scales the canvas using pixel-perfect nearest-neighbor interpolation. Use integer factors (`2`, `3`, `4`) for crisp retro upscale.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `factor` | number | — | Integer scaling factor (`2` = 2x, `4` = 4x) |
+| `width` | number | — | Target width in pixels (if not using factor) |
+| `height` | number | — | Target height in pixels (if not using factor) |
+
+```json
+{ "success": true, "data": { "original_size": [16, 16], "new_size": [32, 32] } }
+```
+
+---
+
 ## 2. Drawing & Painting
+
+### `undo` / `redo`
+Undo or redo drawing actions, layer edits, or cel modifications in Pixelorama.
+
+```json
+// undo
+{ "success": true, "data": { "message": "Undone: Draw Pixels" } }
+
+// redo
+{ "success": true, "data": { "message": "Redone action" } }
+```
+
+---
 
 ### `draw_pixels` ⭐ Primary drawing tool
 Draws multiple pixels in a single batch. **Always use this — never loop `draw_pixel`.**
@@ -411,6 +448,36 @@ Creates a new palette in Pixelorama.
 ### `add_palette_color` / `set_palette_color`
 - **`add_palette_color`**: `{ color: string }`
 - **`set_palette_color`**: `{ index: number, color: string }`
+
+---
+
+### `color_replace`
+Replaces all pixels of `old_color` with `new_color` on the active cel. Invaluable for palette swapping, elemental variants (fire/ice armor), and skin tone customization.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `old_color` | string | ✅ | Color hex to replace (e.g. `"#e74c3c"`) |
+| `new_color` | string | ✅ | Replacement color hex (e.g. `"#3498db"`) |
+| `tolerance` | number | — | Distance tolerance (default: `0.05`) |
+
+```json
+{ "success": true, "data": { "replaced_pixels": 240, "old_color": "e74c3cff", "new_color": "3498dbff" } }
+```
+
+---
+
+### `adjust_hsv`
+Adjusts Hue shift, Saturation, and Brightness/Value on the active cel. Perfect for environmental tints (night/dungeon darkness, poison green glows, frozen blue tints).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `hue_shift` | number | `0.0` | Hue angle shift in degrees (`-180` to `+180`) |
+| `saturation` | number | `1.0` | Saturation multiplier (`0` = grayscale, `2.0` = hyper-vibrant) |
+| `value` | number | `1.0` | Value/Brightness multiplier (`0` = black, `1.5` = bright) |
+
+```json
+{ "success": true, "data": { "modified_pixels": 350, "hue_shift": 120, "saturation": 1.2, "value": 1.0 } }
+```
 
 ---
 

@@ -1,10 +1,10 @@
-# 🎨 pix-MCP
+# 🎨 Pixelorama-MCP
 
 > **For the ones who can imagine it but can't draw it.**
 
 ![AI Generated Coin in Pixelorama](coin.png)
 
-pix-MCP is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that bridges AI assistants (Claude, GPT, Gemini, etc.) with [Pixelorama](https://www.pixelorama.org/), the free & open-source pixel art editor.
+**Pixelorama-MCP** is an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that bridges AI assistants (Claude, Cursor, Antigravity, GPT, Gemini, Qwen, etc.) with [Pixelorama](https://www.pixelorama.org/), the free & open-source pixel art editor.
 
 You describe what you want. The AI handles the rest — shapes, colours, shading, layers, animations, and full sprites — drawn live inside Pixelorama.
 
@@ -47,7 +47,7 @@ The importer auto-detects the background, strips it out, and streams the pixel-p
 AI Client (Claude / Cursor / any MCP client)
         │  MCP — JSON-RPC over stdio
         ▼
-   pix-MCP Server  (TypeScript / Node.js)
+   Pixelorama-MCP Server  (TypeScript / Node.js)
         │  HTTP REST — localhost:7373
         ▼
    Pixelorama Bridge Plugin  (GDScript)
@@ -81,9 +81,9 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "pix-mcp": {
+    "pixelorama": {
       "command": "node",
-      "args": ["/absolute/path/to/pix-MCP/mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/Pixelorama-MCP/mcp-server/dist/index.js"]
     }
   }
 }

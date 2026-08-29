@@ -1,16 +1,9 @@
-/**
- * Image Importer & Pixelizer Tool
- *
- * Imports external PNG images (AI-generated or hand-drawn), automatically detects
- * and strips background colors, quantizes colors to pixel art palettes, and streams
- * the pixel art directly into Pixelorama.
- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as fs from "fs";
 import * as zlib from "zlib";
 import { sendCommand } from "../bridge/pixelorama_client.js";
+import { coerceInt, coerceFloat, coerceBool, safeJsonArray } from "../utils/schema_helpers.js";
 
 // Helper: Paeth Predictor for raw PNG scanline filtering
 function paethPredictor(a: number, b: number, c: number): number {
@@ -147,40 +140,26 @@ export function registerImporterTools(server: McpServer): void {
     "Import any PNG image file into Pixelorama as pixel art. Automatically detects and strips the background, handles optional color quantization to a retro palette, downscales cleanly if requested, and streams pixels with transparency into Pixelorama.",
     {
       file_path: z.string().describe("Absolute file path to the PNG image (e.g. '/path/to/character.png')"),
-      target_width: z
-        .number()
-        .int()
-        .min(8)
-        .max(1024)
+      target_width: coerceInt(8, 1024)
         .optional()
         .describe("Optional target width in pixels to downscale the sprite"),
-      target_height: z
-        .number()
-        .int()
-        .min(8)
-        .max(1024)
+      target_height: coerceInt(8, 1024)
         .optional()
         .describe("Optional target height in pixels to downscale the sprite"),
-      remove_background: z
-        .boolean()
+      remove_background: coerceBool()
         .default(true)
         .describe("If true, auto-detects and strips the background color"),
-      tolerance: z
-        .number()
-        .min(0)
-        .max(100)
+      tolerance: coerceFloat(0, 100)
         .default(20)
         .describe("Color distance tolerance for background removal (higher = cleans more edge halo)"),
-      banned_colors: z
-        .array(z.string())
+      banned_colors: safeJsonArray(z.string())
         .optional()
         .describe("Optional list of additional hex colors to treat as background and strip"),
       palette: z
         .string()
         .optional()
         .describe("Optional retro palette to quantize colors to ('pico8', 'gameboy', 'nes', or leave empty for original colors)"),
-      create_new_canvas: z
-        .boolean()
+      create_new_canvas: coerceBool()
         .default(true)
         .describe("If true, creates a new canvas with the image dimensions. If false, draws onto current canvas."),
       canvas_name: z
