@@ -187,7 +187,8 @@ const MOOD_KEYWORDS: Record<string, string[]> = {
   retro:    ["synthwave", "neon", "80s", "cyberpunk", "vaporwave", "night", "glow", "laser"],
 };
 
-function matchPalette(mood: string): string {
+function matchPalette(mood?: string): string {
+  if (!mood || typeof mood !== "string") return "pico8";
   const lower = mood.toLowerCase();
   for (const [key, keywords] of Object.entries(MOOD_KEYWORDS)) {
     if (keywords.some((kw) => lower.includes(kw))) return key;

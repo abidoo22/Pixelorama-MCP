@@ -80,10 +80,14 @@ export function registerCanvasTools(server: McpServer): void {
 
   server.tool(
     "save_project",
-    "Save the current Pixelorama project. The project must have been saved before (has a save path).",
-    {},
-    async () => {
-      const result = await sendCommand("save_project", {});
+    "Save the current Pixelorama project (.pxo file). Optionally specify a file path.",
+    {
+      path: z.string().optional().describe("Optional file path to save the project (.pxo file)"),
+    },
+    async ({ path }) => {
+      const params: Record<string, unknown> = {};
+      if (path) params.path = path;
+      const result = await sendCommand("save_project", params);
       return {
         content: [
           {

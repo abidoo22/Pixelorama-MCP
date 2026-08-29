@@ -160,4 +160,48 @@ export function registerLayerTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "set_layer_name",
+    "Rename a layer in the project.",
+    {
+      index: coerceInt(0).describe("Layer index"),
+      name: z.string().min(1).describe("New layer name (e.g. 'Background', 'Armor', 'Shadows')"),
+    },
+    async ({ index, name }) => {
+      const result = await sendCommand("set_layer_name", { index, name });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Layer ${index} renamed from "${result.data?.old_name}" to "${name}"`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "reorder_layers",
+    "Change the stack order of layers (move a layer from one index to another).",
+    {
+      from_index: coerceInt(0).describe("Source layer index to move"),
+      to_index: coerceInt(0).describe("Destination layer index in the stack"),
+    },
+    async ({ from_index, to_index }) => {
+      const result = await sendCommand("reorder_layers", { from_index, to_index });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Layer moved from index ${from_index} to ${to_index}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

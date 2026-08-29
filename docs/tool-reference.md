@@ -142,7 +142,9 @@ Scales the canvas using pixel-perfect nearest-neighbor interpolation. Use intege
 
 ---
 
-## 2. Drawing & Painting
+## 2. Drawing, Painting & Inspection
+
+> 💡 **Stateless Targeting**: All drawing tools accept optional `layer` and `frame` parameters. This allows you to draw directly to background layers or specific animation frames in a single turn without needing `switch_cel` first!
 
 ### `undo` / `redo`
 Undo or redo drawing actions, layer edits, or cel modifications in Pixelorama.
@@ -157,12 +159,37 @@ Undo or redo drawing actions, layer edits, or cel modifications in Pixelorama.
 
 ---
 
+### `get_pixel` / `get_pixels` / `get_region` ⭐ Direct Inspection
+Fast, lightweight tools for inspecting canvas colors without needing to decode color-indexed snapshot palettes.
+
+* **`get_pixel`**: Inspect single coordinate.
+  - `{ x: number, y: number, layer?: number, frame?: number }`
+  - Response: `{ color: "#ffffff", r: 255, g: 255, b: 255, a: 255 }`
+* **`get_pixels`**: Batch query multiple coordinates in one round-trip.
+  - `{ coords: [{x: 10, y: 12}, {x: 15, y: 12}], layer?: number, frame?: number }`
+* **`get_region`**: Direct 2D matrix of hex colors for a bounding box (great for tilemap seams).
+  - `{ x: 0, y: 0, width: 16, height: 16, layer?: number, frame?: number }`
+
+---
+
+### `transform_cel` / `rotate_cel` ⭐ Cel Manipulation & Animation
+Nudge or rotate pixels on a cel without erasing and redrawing.
+
+* **`transform_cel`**: Shifts all pixels by `(dx, dy)`. Essential for walk cycles, breathing idle frames (`copy_cel` → `transform_cel(dy: -1)`), and composition corrections.
+  - `{ dx: number, dy: number, wrap_around?: boolean, layer?: number, frame?: number }`
+* **`rotate_cel`**: Rotates cel in 90-degree steps.
+  - `{ angle: 90 | 180 | 270, layer?: number, frame?: number }`
+
+---
+
 ### `draw_pixels` ⭐ Primary drawing tool
 Draws multiple pixels in a single batch. **Always use this — never loop `draw_pixel`.**
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `pixels` | array | ✅ | Array of `{ x, y, color }` objects |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 Each pixel object:
 - `x` — X coordinate (0-indexed)
@@ -170,21 +197,21 @@ Each pixel object:
 - `color` — hex color string (`"#ffd700"`)
 
 ```json
-{ "success": true, "data": { "drawn": 1500, "skipped": 0 } }
+{ "success": true, "data": { "drawn": 1500, "skipped": 0, "pixels_drawn": 1500, "pixels_clipped": 0 } }
 ```
-
-> `skipped > 0` means some coordinates were out of bounds for the canvas. Check your geometry bounds if this happens.
 
 ---
 
 ### `draw_pixel`
-Draws a single pixel. Only use for one-off corrections — never in a loop.
+Draws a single pixel.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `x` | number | ✅ | X coordinate |
 | `y` | number | ✅ | Y coordinate |
 | `color` | string | — | Hex color (default: `"#000000"`) |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -199,6 +226,8 @@ Draws a filled or outlined rectangle.
 | `height` | number | ✅ | Height in pixels |
 | `color` | string | — | Hex color (default: `"#000000"`) |
 | `filled` | boolean | — | `true` = filled (default), `false` = outline only |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -213,6 +242,8 @@ Draws a filled or outlined ellipse or circle.
 | `ry` | number | ✅ | Y radius |
 | `color` | string | — | Hex color (default: `"#000000"`) |
 | `filled` | boolean | — | `true` = filled (default), `false` = outline only |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -224,6 +255,8 @@ Draws a straight line using Bresenham's algorithm.
 | `x1`, `y1` | number | ✅ | Start point |
 | `x2`, `y2` | number | ✅ | End point |
 | `color` | string | — | Hex color (default: `"#000000"`) |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -235,6 +268,8 @@ Draws a polygon from a vertex array.
 | `points` | array | ✅ | `[{"x": 10, "y": 12}, ...]` (min 3) |
 | `color` | string | — | Hex color (default: `"#000000"`) |
 | `filled` | boolean | — | `true` = filled (default), `false` = outline only |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -246,6 +281,8 @@ Draws a continuous polyline connecting ordered points.
 | `points` | array | ✅ | Ordered `[{"x": 10, "y": 12}, ...]` coordinates (min 2) |
 | `closed` | boolean | — | If `true`, closes path back to start (default: `false`) |
 | `color` | string | — | Hex color (default: `"#000000"`) |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
@@ -257,12 +294,14 @@ Flood-fills from a seed coordinate (paint bucket).
 | `x` | number | ✅ | Seed X |
 | `y` | number | ✅ | Seed Y |
 | `color` | string | — | Fill color (default: `"#000000"`) |
+| `layer` | number | — | Optional target layer index |
+| `frame` | number | — | Optional target frame index |
 
 ---
 
 ## 3. Layers
 
-Pixelorama supports multi-layer projects. Use layers to separate background, body, outline, and effects — especially useful when game engines need to manipulate parts independently.
+Pixelorama supports multi-layer projects. Use layers to separate background, body, outline, and effects.
 
 ### `add_layer`
 Adds a new layer to the current project.
@@ -272,6 +311,12 @@ Adds a new layer to the current project.
 | `name` | string | `""` | Layer name (empty for auto-naming) |
 | `type` | number | `0` | `0` = Pixel, `1` = Group, `2` = 3D |
 | `above_layer` | number | — | Insert above this layer index (defaults to current layer) |
+
+---
+
+### `set_layer_name` / `reorder_layers`
+- **`set_layer_name`**: `{ index: number, name: string }` — Renames a layer.
+- **`reorder_layers`**: `{ from_index: number, to_index: number }` — Moves a layer in the stack order.
 
 ```json
 { "success": true, "data": { "name": "Outline", "type": 0, "above_layer": 0 } }

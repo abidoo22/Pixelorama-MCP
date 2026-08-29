@@ -51,10 +51,158 @@ export function registerDrawingTools(server: McpServer): void {
     }
   );
 
+  // ── get_pixel ───────────────────────────────────────────────────────
+  server.tool(
+    "get_pixel",
+    "Directly inspect the color at coordinates (x, y) on a cel. Returns exact hex and RGBA values.",
+    {
+      x: coerceInt().describe("X coordinate"),
+      y: coerceInt().describe("Y coordinate"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ x, y, layer, frame }) => {
+      const result = await sendCommand("get_pixel", { x, y, layer, frame });
+      if (result.success && result.data) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `🔍 Pixel at (${x}, ${y}): ${result.data.color} (R:${result.data.r} G:${result.data.g} B:${result.data.b} A:${result.data.a}) [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
+      };
+    }
+  );
+
+  // ── get_pixels ──────────────────────────────────────────────────────
+  server.tool(
+    "get_pixels",
+    "Batch inspect multiple pixel coordinates in one call. Returns exact colors for each coordinate.",
+    {
+      coords: safeJsonArray(
+        z.object({
+          x: coerceInt().describe("X coordinate"),
+          y: coerceInt().describe("Y coordinate"),
+        }),
+        1
+      ).describe("Array of coordinate objects [{x, y}, ...]"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ coords, layer, frame }) => {
+      const result = await sendCommand("get_pixels", { coords, layer, frame });
+      if (result.success && result.data) {
+        const pixels = result.data.pixels as Array<{ x: number; y: number; color: string | null; error?: string }>;
+        const list = pixels
+          .map((p) =>
+            p.error ? `(${p.x},${p.y}): out_of_bounds` : `(${p.x},${p.y}): ${p.color}`
+          )
+          .join("\n");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `🔍 Inspected ${result.data.count} pixels [frame:${result.data.frame}, layer:${result.data.layer}]:\n${list}`,
+            },
+          ],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
+      };
+    }
+  );
+
+  // ── get_region ──────────────────────────────────────────────────────
+  server.tool(
+    "get_region",
+    "Get a direct 2D matrix of hex colors for a rectangular area (no palette index decoding required). Perfect for checking tile seams and alignment.",
+    {
+      x: coerceInt().default(0).describe("Top-left X coordinate"),
+      y: coerceInt().default(0).describe("Top-left Y coordinate"),
+      width: coerceInt(1, 128).default(16).describe("Width of region (max 128)"),
+      height: coerceInt(1, 128).default(16).describe("Height of region (max 128)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ x, y, width, height, layer, frame }) => {
+      const result = await sendCommand("get_region", { x, y, width, height, layer, frame });
+      if (result.success && result.data) {
+        const d = result.data;
+        const grid = d.grid as string[][];
+        let text = `Region (${d.x},${d.y}) ${d.width}×${d.height} [frame:${d.frame}, layer:${d.layer}]:\n`;
+        for (const row of grid) {
+          text += row.join(" ") + "\n";
+        }
+        return {
+          content: [{ type: "text" as const, text }],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
+      };
+    }
+  );
+
+  // ── transform_cel ───────────────────────────────────────────────────
+  server.tool(
+    "transform_cel",
+    "Nudge, translate, or offset all pixels on a cel by (dx, dy). Essential for creating walking/breathing animation frames without redrawing, and for composition adjustments.",
+    {
+      dx: coerceInt().describe("Horizontal shift in pixels (+ right, - left)"),
+      dy: coerceInt().describe("Vertical shift in pixels (+ down, - up)"),
+      wrap_around: coerceBool().default(false).describe("If true, pixels shifted off one edge wrap to the opposite edge (useful for seamless textures)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ dx, dy, wrap_around, layer, frame }) => {
+      const result = await sendCommand("transform_cel", { dx, dy, wrap_around, layer, frame });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `🚀 Cel transformed by (${dx}, ${dy}) — ${result.data?.shifted_pixels ?? 0} pixels shifted [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ── rotate_cel ──────────────────────────────────────────────────────
+  server.tool(
+    "rotate_cel",
+    "Rotate all pixels on a cel in 90-degree increments (90, 180, 270).",
+    {
+      angle: coerceInt().describe("Rotation angle in degrees (90, 180, or 270)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ angle, layer, frame }) => {
+      const result = await sendCommand("rotate_cel", { angle, layer, frame });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `🔄 Cel rotated ${angle}° [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
   // ── draw_pixel ──────────────────────────────────────────────────────
   server.tool(
     "draw_pixel",
-    "Set a single pixel at the given (x, y) coordinates to the specified RGBA color on the current layer.",
+    "Set a single pixel at the given (x, y) coordinates to the specified RGBA color.",
     {
       x: coerceInt().describe("X coordinate (0-based, left to right)"),
       y: coerceInt().describe("Y coordinate (0-based, top to bottom)"),
@@ -62,18 +210,24 @@ export function registerDrawingTools(server: McpServer): void {
         .string()
         .default("#000000")
         .describe("Pixel color as hex string (e.g. '#FF5733', '#00FF00FF')"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color }) => {
-      const result = await sendCommand("draw_pixel", { x, y, color });
+    async ({ x, y, color, layer, frame }) => {
+      const result = await sendCommand("draw_pixel", { x, y, color, layer, frame });
+      if (result.success && result.data) {
+        const clipped = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ clipped outside canvas)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Pixel at (${x}, ${y}) set to ${color} on [frame:${result.data.frame}, layer:${result.data.layer}]${clipped}`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Pixel drawn at (${x}, ${y}) with color ${color}`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -91,24 +245,32 @@ export function registerDrawingTools(server: McpServer): void {
         .string()
         .default("#000000")
         .describe("Line color as hex string"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x1, y1, x2, y2, color }) => {
+    async ({ x1, y1, x2, y2, color, layer, frame }) => {
       const result = await sendCommand("draw_line", {
         x1,
         y1,
         x2,
         y2,
         color,
+        layer,
+        frame,
       });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} pixels clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Line drawn from (${x1},${y1}) to (${x2},${y2}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Line drawn from (${x1},${y1}) to (${x2},${y2})`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -116,7 +278,7 @@ export function registerDrawingTools(server: McpServer): void {
   // ── draw_rect ───────────────────────────────────────────────────────
   server.tool(
     "draw_rect",
-    "Draw a rectangle on the current layer. Can be filled or outline only.",
+    "Draw a rectangle on the specified cel. Can be filled or outline only.",
     {
       x: coerceInt().describe("Top-left X coordinate"),
       y: coerceInt().describe("Top-left Y coordinate"),
@@ -129,8 +291,10 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the rectangle; if false, draw outline only"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, width, height, color, filled }) => {
+    async ({ x, y, width, height, color, filled, layer, frame }) => {
       const result = await sendCommand("draw_rect", {
         x,
         y,
@@ -138,16 +302,22 @@ export function registerDrawingTools(server: McpServer): void {
         height,
         color,
         filled,
+        layer,
+        frame,
       });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ ${result.data.pixels_clipped} px clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Rectangle drawn at (${x},${y}) size ${width}×${height} (${filled ? "filled" : "outline"}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Rectangle drawn at (${x},${y}) size ${width}×${height} (${filled ? "filled" : "outline"})`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -168,8 +338,10 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the ellipse; if false, draw outline only"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ cx, cy, rx, ry, color, filled }) => {
+    async ({ cx, cy, rx, ry, color, filled, layer, frame }) => {
       const result = await sendCommand("draw_ellipse", {
         cx,
         cy,
@@ -177,16 +349,22 @@ export function registerDrawingTools(server: McpServer): void {
         ry,
         color,
         filled,
+        layer,
+        frame,
       });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ ${result.data.pixels_clipped} px clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Ellipse drawn at center (${cx},${cy}) radii ${rx}×${ry} [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Ellipse drawn at center (${cx},${cy}) radii ${rx}×${ry}`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -202,15 +380,17 @@ export function registerDrawingTools(server: McpServer): void {
         .string()
         .default("#000000")
         .describe("Fill color as hex string"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color }) => {
-      const result = await sendCommand("fill_area", { x, y, color });
+    async ({ x, y, color, layer, frame }) => {
+      const result = await sendCommand("fill_area", { x, y, color, layer, frame });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Flood fill from (${x},${y}) — ${result.data?.pixels_filled ?? "?"} pixels filled`
+              ? `✅ Flood fill from (${x},${y}) — ${result.data?.pixels_filled ?? "?"} pixels filled on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -231,23 +411,24 @@ export function registerDrawingTools(server: McpServer): void {
         }),
         1
       ).describe("Array of pixel objects, each with x, y, and color"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ pixels }) => {
-      const result = await sendCommand("draw_pixels", { pixels });
+    async ({ pixels, layer, frame }) => {
+      const result = await sendCommand("draw_pixels", { pixels, layer, frame });
       if (result.success && result.data) {
+        const clippedInfo = Number(result.data.skipped) > 0 ? ` (${result.data.skipped} skipped/clipped)` : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Batch draw: ${result.data.drawn} pixels drawn, ${result.data.skipped} skipped (${result.data.total} total)`,
+              text: `✅ Batch draw: ${result.data.drawn} pixels drawn${clippedInfo} (${result.data.total} total) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };
       }
       return {
-        content: [
-          { type: "text" as const, text: `❌ ${result.error}` },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -292,9 +473,7 @@ export function registerDrawingTools(server: McpServer): void {
         };
       }
       return {
-        content: [
-          { type: "text" as const, text: `❌ ${result.error}` },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -318,18 +497,24 @@ export function registerDrawingTools(server: McpServer): void {
       closed: coerceBool()
         .default(false)
         .describe("If true, connect the last point back to the first"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, closed }) => {
-      const result = await sendCommand("draw_path", { points, color, closed });
+    async ({ points, color, closed, layer, frame }) => {
+      const result = await sendCommand("draw_path", { points, color, closed, layer, frame });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Path drawn with ${points.length} points (${closed ? "closed" : "open"}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Path drawn with ${points.length} points (${closed ? "closed" : "open"})`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );
@@ -353,18 +538,24 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the polygon; if false, draw outline only"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, filled }) => {
-      const result = await sendCommand("draw_polygon", { points, color, filled });
+    async ({ points, color, filled, layer, frame }) => {
+      const result = await sendCommand("draw_polygon", { points, color, filled, layer, frame });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Polygon drawn with ${points.length} vertices (${filled ? "filled" : "outline"}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Polygon drawn with ${points.length} vertices (${filled ? "filled" : "outline"})`
-              : `❌ ${result.error}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
       };
     }
   );

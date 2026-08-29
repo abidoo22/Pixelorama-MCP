@@ -63,22 +63,24 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "color_replace",
-    "Replace all pixels of old_color with new_color on the active cel. Invaluable for palette swapping, elemental variants (fire/ice armor), shiny monsters, and skin tone adjustments.",
+    "Replace all pixels of old_color with new_color on the target cel. Invaluable for palette swapping, elemental variants (fire/ice armor), shiny monsters, and skin tone adjustments.",
     {
       old_color: z.string().describe("Hex color to be replaced (e.g. '#e74c3c')"),
       new_color: z.string().describe("New hex color to replace with (e.g. '#3498db')"),
       tolerance: coerceFloat(0, 1)
         .default(0.05)
         .describe("Color distance tolerance (0.0 = exact match, 0.1 = includes near shades)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ old_color, new_color, tolerance }) => {
-      const result = await sendCommand("color_replace", { old_color, new_color, tolerance });
+    async ({ old_color, new_color, tolerance, layer, frame }) => {
+      const result = await sendCommand("color_replace", { old_color, new_color, tolerance, layer, frame });
       if (result.success && result.data) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Replaced ${result.data.replaced_pixels} pixels from ${old_color} to ${new_color}`,
+              text: `✅ Replaced ${result.data.replaced_pixels} pixels from ${old_color} to ${new_color} on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };
@@ -89,7 +91,7 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "adjust_hsv",
-    "Adjust Hue, Saturation, and Brightness/Value on the active cel. Perfect for environmental tints (night/dungeon darkness, poison green glow, frozen blue tint).",
+    "Adjust Hue, Saturation, and Brightness/Value on the target cel. Perfect for environmental tints (night/dungeon darkness, poison green glow, frozen blue tint).",
     {
       hue_shift: coerceFloat(-180, 180)
         .default(0)
@@ -100,15 +102,17 @@ export function registerColorTools(server: McpServer): void {
       value: coerceFloat(0, 5)
         .default(1.0)
         .describe("Value/Brightness multiplier (0 = black, 1.0 = original, 1.5 = brighter)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ hue_shift, saturation, value }) => {
-      const result = await sendCommand("adjust_hsv", { hue_shift, saturation, value });
+    async ({ hue_shift, saturation, value, layer, frame }) => {
+      const result = await sendCommand("adjust_hsv", { hue_shift, saturation, value, layer, frame });
       if (result.success && result.data) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Adjusted HSV on ${result.data.modified_pixels} pixels (Hue: ${hue_shift}°, Sat: ${saturation}x, Val: ${value}x)`,
+              text: `✅ Adjusted HSV on ${result.data.modified_pixels} pixels (Hue: ${hue_shift}°, Sat: ${saturation}x, Val: ${value}x) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };

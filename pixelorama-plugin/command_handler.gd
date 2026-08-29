@@ -46,6 +46,13 @@ func _register_tools() -> void:
 	_tool_registry["fill_area"] = Callable(self, "_cmd_fill_area")
 	_tool_registry["apply_outline"] = Callable(self, "_cmd_apply_outline")
 	_tool_registry["mirror_layer"] = Callable(self, "_cmd_mirror_layer")
+	_tool_registry["transform_cel"] = Callable(self, "_cmd_transform_cel")
+	_tool_registry["rotate_cel"] = Callable(self, "_cmd_rotate_cel")
+
+	# Inspection
+	_tool_registry["get_pixel"] = Callable(self, "_cmd_get_pixel")
+	_tool_registry["get_pixels"] = Callable(self, "_cmd_get_pixels")
+	_tool_registry["get_region"] = Callable(self, "_cmd_get_region")
 
 	# Colour
 	_tool_registry["set_color"] = Callable(self, "_cmd_set_color")
@@ -60,6 +67,8 @@ func _register_tools() -> void:
 	_tool_registry["set_layer_opacity"] = Callable(self, "_cmd_set_layer_opacity")
 	_tool_registry["set_layer_blend_mode"] = Callable(self, "_cmd_set_layer_blend_mode")
 	_tool_registry["set_layer_visibility"] = Callable(self, "_cmd_set_layer_visibility")
+	_tool_registry["set_layer_name"] = Callable(self, "_cmd_set_layer_name")
+	_tool_registry["reorder_layers"] = Callable(self, "_cmd_reorder_layers")
 
 	# Frames & Animation
 	_tool_registry["add_frame"] = Callable(self, "_cmd_add_frame")
@@ -123,31 +132,56 @@ func _get_current_image() -> Image:
 	return cel.get_image()
 
 
-func _commit_image_change(image: Image, _action_name: String) -> void:
+func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"error": "No active project", "image": null, "frame": 0, "layer": 0}
+
+	var frame_idx: int = int(params.get("frame", project.current_frame))
+	var layer_idx: int = int(params.get("layer", project.current_layer))
+
+	if frame_idx < 0 or frame_idx >= project.frames.size():
+		return {"error": "Frame index out of bounds: %d (0..%d)" % [frame_idx, project.frames.size() - 1], "image": null, "frame": frame_idx, "layer": layer_idx}
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return {"error": "Layer index out of bounds: %d (0..%d)" % [layer_idx, project.layers.size() - 1], "image": null, "frame": frame_idx, "layer": layer_idx}
+
+	var cel = project.frames[frame_idx].cels[layer_idx]
+	if cel == null or cel.get_class_name() != "PixelCel":
+		return {"error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [frame_idx, layer_idx], "image": null, "frame": frame_idx, "layer": layer_idx}
+
+	return {"error": "", "image": cel.get_image(), "frame": frame_idx, "layer": layer_idx, "cel": cel}
+
+
+func _commit_image_change(image: Image, _action_name: String, frame_idx: int = -1, layer_idx: int = -1) -> void:
 	## Commits the modified image through Pixelorama's undo system.
 	## This ensures every AI action is undoable by the user.
 	var project = _api.project.current_project
 	if project == null:
 		return
-	
+
+	if frame_idx < 0:
+		frame_idx = project.current_frame
+	if layer_idx < 0:
+		layer_idx = project.current_layer
+
 	# 1. Duplicate the image to force a new object reference in Godot,
 	# which ensures Pixelorama's caches detect the change and update the canvas.
 	var dup_image := image.duplicate()
 	_api.project.set_pixelcel_image(
 		dup_image,
-		project.current_frame,
-		project.current_layer
+		frame_idx,
+		layer_idx
 	)
 
 	# 2. Programmatically select the current cel to trigger a switch/refresh signal
-	_api.project.select_cels([[project.current_frame, project.current_layer]])
+	_api.project.select_cels([[frame_idx, layer_idx]])
 
 	# 3. Request redraw on the main canvas (necessary in Pixelorama v1.1.9+ as it doesn't continuously redraw when idle)
 	var canvas = _api.general.get_canvas()
 	if canvas:
 		canvas.queue_redraw()
 		if canvas.has_method("update_texture"):
-			canvas.update_texture(project.current_layer)
+			canvas.update_texture(layer_idx)
 
 
 func _parse_color(params: Dictionary, key: String = "color", default_color: Color = Color.BLACK) -> Color:
@@ -270,17 +304,21 @@ func _cmd_get_canvas_snapshot(params: Dictionary) -> Dictionary:
 	}
 
 
-func _cmd_save_project(_params: Dictionary) -> Dictionary:
+func _cmd_save_project(params: Dictionary) -> Dictionary:
 	var project = _api.project.current_project
 	if project == null:
 		return {"success": false, "error": "No active project"}
+
+	var target_path: String = params.get("path", "")
+	if target_path != "":
+		project.save_path = target_path
 
 	var open_save = _api.import.open_save_autoload()
 	if project.save_path != "":
 		open_save.save_pxo(project.save_path)
 		return {"success": true, "data": {"path": project.save_path}}
 	else:
-		return {"success": false, "error": "No save path set. Use Pixelorama's File > Save As first."}
+		return {"success": false, "error": "No save path set. Use Pixelorama's File > Save As first or specify 'path'."}
 
 
 func _cmd_export_image(params: Dictionary) -> Dictionary:
@@ -492,131 +530,189 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 	return {"success": false, "error": "UndoRedo system not available"}
 
 func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
-	var x: int = params.get("x", 0)
-	var y: int = params.get("y", 0)
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var x: int = int(params.get("x", 0))
+	var y: int = int(params.get("y", 0))
 	var color := _parse_color(params)
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
-
 	if x < 0 or x >= image.get_width() or y < 0 or y >= image.get_height():
-		return {"success": false, "error": "Coordinates (%d, %d) out of bounds (%dx%d)" % [x, y, image.get_width(), image.get_height()]}
+		return {
+			"success": true,
+			"data": {
+				"x": x,
+				"y": y,
+				"color": color.to_html(),
+				"pixels_drawn": 0,
+				"pixels_clipped": 1,
+				"frame": target.frame,
+				"layer": target.layer
+			}
+		}
 
 	image.set_pixel(x, y, color)
-	_commit_image_change(image, "Draw Pixel")
-	return {"success": true, "data": {"x": x, "y": y, "color": color.to_html()}}
+	_commit_image_change(image, "Draw Pixel", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"x": x,
+			"y": y,
+			"color": color.to_html(),
+			"pixels_drawn": 1,
+			"pixels_clipped": 0,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
-	## Batch draw multiple pixels in a single undo-able operation.
-	## Expects "pixels" as an array of {"x": int, "y": int, "color": "#hex"} objects.
-	## Optimized with color caching to avoid redundant string parsing in the loop.
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
 	var pixels: Array = params.get("pixels", [])
 	if pixels.is_empty():
 		return {"success": false, "error": "Missing or empty 'pixels' array"}
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
-
+	var image: Image = target.image
 	var w := image.get_width()
 	var h := image.get_height()
 	var drawn := 0
 	var skipped := 0
-
 	var color_cache := {}
 
 	for pixel in pixels:
 		if not pixel is Dictionary:
 			skipped += 1
 			continue
-		var x: int = pixel.get("x", -1)
-		var y: int = pixel.get("y", -1)
+		var x: int = int(pixel.get("x", -1))
+		var y: int = int(pixel.get("y", -1))
 		if x < 0 or x >= w or y < 0 or y >= h:
 			skipped += 1
 			continue
-		
-		var color_str: String = pixel.get("color", "")
+
+		var color_str: String = str(pixel.get("color", ""))
 		var color: Color
 		if color_cache.has(color_str):
 			color = color_cache[color_str]
 		else:
 			color = _parse_color(pixel)
 			color_cache[color_str] = color
-			
+
 		image.set_pixel(x, y, color)
 		drawn += 1
 
-	# Single commit for all pixels — one undo step
-	_commit_image_change(image, "Draw Pixels (batch)")
+	_commit_image_change(image, "Draw Pixels (batch)", target.frame, target.layer)
 	return {
 		"success": true,
 		"data": {
 			"drawn": drawn,
 			"skipped": skipped,
-			"total": pixels.size()
+			"pixels_drawn": drawn,
+			"pixels_clipped": skipped,
+			"total": pixels.size(),
+			"frame": target.frame,
+			"layer": target.layer
 		}
 	}
 
 
 func _cmd_draw_rect(params: Dictionary) -> Dictionary:
-	var x: int = params.get("x", 0)
-	var y: int = params.get("y", 0)
-	var width: int = params.get("width", 1)
-	var height: int = params.get("height", 1)
-	var filled: bool = params.get("filled", true)
-	var color := _parse_color(params)
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var image: Image = target.image
+	var x: int = int(params.get("x", 0))
+	var y: int = int(params.get("y", 0))
+	var width: int = int(params.get("width", 1))
+	var height: int = int(params.get("height", 1))
+	var filled: bool = bool(params.get("filled", true))
+	var color := _parse_color(params)
 
 	var img_w := image.get_width()
 	var img_h := image.get_height()
+	var drawn := 0
+	var total := 0
 
 	if filled:
-		# Clamp the fill rect to canvas bounds for safety
+		total = width * height
 		var clamped := Rect2i(x, y, width, height).intersection(Rect2i(0, 0, img_w, img_h))
 		if clamped.has_area():
 			image.fill_rect(clamped, color)
+			drawn = clamped.get_area()
 	else:
-		# Draw outline only — top, bottom, left, right edges
+		total = width * 2 + maxi(0, height - 2) * 2
 		for px in range(x, x + width):
 			if px >= 0 and px < img_w:
 				if y >= 0 and y < img_h:
 					image.set_pixel(px, y, color)
+					drawn += 1
 				var bot := y + height - 1
 				if bot >= 0 and bot < img_h and height > 1:
 					image.set_pixel(px, bot, color)
-		for py in range(y + 1, y + height - 1):  # Exclude corners (already drawn)
+					drawn += 1
+		for py in range(y + 1, y + height - 1):
 			if py >= 0 and py < img_h:
 				if x >= 0 and x < img_w:
 					image.set_pixel(x, py, color)
+					drawn += 1
 				var right := x + width - 1
 				if right >= 0 and right < img_w and width > 1:
 					image.set_pixel(right, py, color)
+					drawn += 1
 
-	_commit_image_change(image, "Draw Rectangle")
-	return {"success": true, "data": {"x": x, "y": y, "width": width, "height": height, "filled": filled}}
+	_commit_image_change(image, "Draw Rectangle", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"x": x,
+			"y": y,
+			"width": width,
+			"height": height,
+			"filled": filled,
+			"pixels_drawn": drawn,
+			"pixels_clipped": maxi(0, total - drawn),
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_draw_line(params: Dictionary) -> Dictionary:
-	var x1: int = params.get("x1", 0)
-	var y1: int = params.get("y1", 0)
-	var x2: int = params.get("x2", 0)
-	var y2: int = params.get("y2", 0)
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var x1: int = int(params.get("x1", 0))
+	var y1: int = int(params.get("y1", 0))
+	var x2: int = int(params.get("x2", 0))
+	var y2: int = int(params.get("y2", 0))
 	var color := _parse_color(params)
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var res := _draw_line_on_image(image, x1, y1, x2, y2, color)
+	_commit_image_change(image, "Draw Line", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"x1": x1,
+			"y1": y1,
+			"x2": x2,
+			"y2": y2,
+			"pixels_drawn": res.drawn,
+			"pixels_clipped": res.clipped,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
-	var pixel_count := _draw_line_on_image(image, x1, y1, x2, y2, color)
-	_commit_image_change(image, "Draw Line")
-	return {"success": true, "data": {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "pixels": pixel_count}}
 
-func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color: Color) -> int:
+func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color: Color) -> Dictionary:
 	var dx := absi(x2 - x1)
 	var dy := -absi(y2 - y1)
 	var sx := 1 if x1 < x2 else -1
@@ -624,12 +720,15 @@ func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color
 	var err := dx + dy
 	var cx := x1
 	var cy := y1
-	var pixel_count := 0
+	var drawn := 0
+	var clipped := 0
 
 	while true:
 		if cx >= 0 and cx < image.get_width() and cy >= 0 and cy < image.get_height():
 			image.set_pixel(cx, cy, color)
-			pixel_count += 1
+			drawn += 1
+		else:
+			clipped += 1
 		if cx == x2 and cy == y2:
 			break
 		var e2 := 2 * err
@@ -639,111 +738,141 @@ func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color
 		if e2 <= dx:
 			err += dx
 			cy += sy
-	return pixel_count
+	return {"drawn": drawn, "clipped": clipped}
 
 
 func _cmd_draw_path(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
 	var points: Array = params.get("points", [])
 	if points.size() < 2:
 		return {"success": false, "error": "Path requires at least 2 points"}
-	var closed: bool = params.get("closed", false)
+	var closed: bool = bool(params.get("closed", false))
 	var color := _parse_color(params)
+	var image: Image = target.image
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
-
-	var pixel_count := 0
+	var drawn := 0
+	var clipped := 0
 	for i in range(points.size() - 1):
-		pixel_count += _draw_line_on_image(image, points[i].x, points[i].y, points[i+1].x, points[i+1].y, color)
-	
-	if closed and points.size() > 2:
-		pixel_count += _draw_line_on_image(image, points[-1].x, points[-1].y, points[0].x, points[0].y, color)
+		var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color)
+		drawn += res.drawn
+		clipped += res.clipped
 
-	_commit_image_change(image, "Draw Path")
-	return {"success": true, "data": {"points": points.size(), "closed": closed, "pixels": pixel_count}}
+	if closed and points.size() > 2:
+		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color)
+		drawn += res.drawn
+		clipped += res.clipped
+
+	_commit_image_change(image, "Draw Path", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"points": points.size(),
+			"closed": closed,
+			"pixels_drawn": drawn,
+			"pixels_clipped": clipped,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_draw_polygon(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
 	var points_array: Array = params.get("points", [])
 	if points_array.size() < 3:
 		return {"success": false, "error": "Polygon requires at least 3 points"}
-	
+
 	var points := PackedVector2Array()
 	var min_x := 999999
 	var max_x := -999999
 	var min_y := 999999
 	var max_y := -999999
 	for p in points_array:
-		var x = p.get("x", 0)
-		var y = p.get("y", 0)
+		var x = int(p.get("x", 0))
+		var y = int(p.get("y", 0))
 		points.append(Vector2(x, y))
 		min_x = mini(min_x, x)
 		max_x = maxi(max_x, x)
 		min_y = mini(min_y, y)
 		max_y = maxi(max_y, y)
 
-	var filled: bool = params.get("filled", true)
+	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
+	var image: Image = target.image
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
-
-	var pixel_count := 0
+	var drawn := 0
+	var clipped := 0
 	var w := image.get_width()
 	var h := image.get_height()
 
 	if filled:
-		min_x = clampi(min_x, 0, w - 1)
-		max_x = clampi(max_x, 0, w - 1)
-		min_y = clampi(min_y, 0, h - 1)
-		max_y = clampi(max_y, 0, h - 1)
-		
 		for py in range(min_y, max_y + 1):
 			for px in range(min_x, max_x + 1):
 				if Geometry2D.is_point_in_polygon(Vector2(px, py), points):
-					image.set_pixel(px, py, color)
-					pixel_count += 1
+					if px >= 0 and px < w and py >= 0 and py < h:
+						image.set_pixel(px, py, color)
+						drawn += 1
+					else:
+						clipped += 1
 	else:
 		for i in range(points.size() - 1):
-			pixel_count += _draw_line_on_image(image, points[i].x, points[i].y, points[i+1].x, points[i+1].y, color)
-		pixel_count += _draw_line_on_image(image, points[-1].x, points[-1].y, points[0].x, points[0].y, color)
+			var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color)
+			drawn += res.drawn
+			clipped += res.clipped
+		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color)
+		drawn += res.drawn
+		clipped += res.clipped
 
-	_commit_image_change(image, "Draw Polygon")
-	return {"success": true, "data": {"points": points.size(), "filled": filled, "pixels": pixel_count}}
+	_commit_image_change(image, "Draw Polygon", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"points": points.size(),
+			"filled": filled,
+			"pixels_drawn": drawn,
+			"pixels_clipped": clipped,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
-	var cx: int = params.get("cx", 0)
-	var cy: int = params.get("cy", 0)
-	var rx: int = params.get("rx", 1)
-	var ry: int = params.get("ry", 1)
-	var filled: bool = params.get("filled", true)
-	var color := _parse_color(params)
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var image: Image = target.image
+	var cx: int = int(params.get("cx", 0))
+	var cy: int = int(params.get("cy", 0))
+	var rx: int = int(params.get("rx", 1))
+	var ry: int = int(params.get("ry", 1))
+	var filled: bool = bool(params.get("filled", true))
+	var color := _parse_color(params)
 
 	var img_w := image.get_width()
 	var img_h := image.get_height()
-	var pixel_count := 0
+	var drawn := 0
+	var clipped := 0
 
 	if filled:
 		for py in range(cy - ry, cy + ry + 1):
-			if py < 0 or py >= img_h:
-				continue
 			for px in range(cx - rx, cx + rx + 1):
-				if px < 0 or px >= img_w:
-					continue
 				var nx: float = float(px - cx) / float(rx) if rx > 0 else 0.0
 				var ny: float = float(py - cy) / float(ry) if ry > 0 else 0.0
 				if nx * nx + ny * ny <= 1.0:
-					image.set_pixel(px, py, color)
-					pixel_count += 1
+					if px >= 0 and px < img_w and py >= 0 and py < img_h:
+						image.set_pixel(px, py, color)
+						drawn += 1
+					else:
+						clipped += 1
 	else:
-		# Draw outline using parametric approach with enough steps for clean pixels
 		var steps := maxi(maxi(rx, ry) * 8, 32)
 		for i in range(steps):
 			var angle := (float(i) / float(steps)) * TAU
@@ -751,20 +880,34 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 			var py := cy + roundi(float(ry) * sin(angle))
 			if px >= 0 and px < img_w and py >= 0 and py < img_h:
 				image.set_pixel(px, py, color)
-				pixel_count += 1
+				drawn += 1
+			else:
+				clipped += 1
 
-	_commit_image_change(image, "Draw Ellipse")
-	return {"success": true, "data": {"cx": cx, "cy": cy, "rx": rx, "ry": ry, "filled": filled, "pixels": pixel_count}}
-
-
+	_commit_image_change(image, "Draw Ellipse", target.frame, target.layer)
+	return {
+		"success": true,
+		"data": {
+			"cx": cx,
+			"cy": cy,
+			"rx": rx,
+			"ry": ry,
+			"filled": filled,
+			"pixels_drawn": drawn,
+			"pixels_clipped": clipped,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 func _cmd_fill_area(params: Dictionary) -> Dictionary:
-	var x: int = params.get("x", 0)
-	var y: int = params.get("y", 0)
-	var color := _parse_color(params)
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var x: int = int(params.get("x", 0))
+	var y: int = int(params.get("y", 0))
+	var color := _parse_color(params)
+	var image: Image = target.image
 
 	var w := image.get_width()
 	var h := image.get_height()
@@ -774,13 +917,10 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 
 	var target_color := image.get_pixel(x, y)
 	if target_color.is_equal_approx(color):
-		return {"success": true, "data": {"message": "Fill color same as target, no change", "pixels_filled": 0}}
+		return {"success": true, "data": {"message": "Fill color same as target, no change", "pixels_filled": 0, "frame": target.frame, "layer": target.layer}}
 
-	# Scanline flood fill — much faster than naive stack-based approach
-	# and avoids the visited-dict key collision bug
 	var filled_count := 0
 	var stack: Array[Vector2i] = [Vector2i(x, y)]
-	# Use a flat boolean array for visited tracking (no hash collisions)
 	var visited := PackedByteArray()
 	visited.resize(w * h)
 	visited.fill(0)
@@ -817,7 +957,6 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 		for fill_x in range(left, right + 1):
 			image.set_pixel(fill_x, py, color)
 			filled_count += 1
-			# Add pixels above and below to stack
 			if py > 0:
 				var up_idx: int = (py - 1) * w + fill_x
 				if visited[up_idx] == 0:
@@ -827,19 +966,20 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 				if visited[down_idx] == 0:
 					stack.append(Vector2i(fill_x, py + 1))
 
-	_commit_image_change(image, "Fill Area")
-	return {"success": true, "data": {"x": x, "y": y, "pixels_filled": filled_count}}
+	_commit_image_change(image, "Fill Area", target.frame, target.layer)
+	return {"success": true, "data": {"x": x, "y": y, "pixels_filled": filled_count, "frame": target.frame, "layer": target.layer}}
 
 
 func _cmd_apply_outline(params: Dictionary) -> Dictionary:
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
+	var image: Image = target.image
 	var color := _parse_color(params, "color", Color.BLACK)
-	var thickness: int = params.get("thickness", 1)
+	var thickness: int = int(params.get("thickness", 1))
 	thickness = clampi(thickness, 1, 4)
-	var inside: bool = params.get("inside", false)
+	var inside: bool = bool(params.get("inside", false))
 
 	var w := image.get_width()
 	var h := image.get_height()
@@ -884,17 +1024,18 @@ func _cmd_apply_outline(params: Dictionary) -> Dictionary:
 						outlined_img.set_pixel(x, y, color)
 						count += 1
 
-	_commit_image_change(outlined_img, "Apply Outline")
-	return {"success": true, "data": {"outline_pixels": count, "color": color.to_html(), "thickness": thickness, "inside": inside}}
+	_commit_image_change(outlined_img, "Apply Outline", target.frame, target.layer)
+	return {"success": true, "data": {"outline_pixels": count, "color": color.to_html(), "thickness": thickness, "inside": inside, "frame": target.frame, "layer": target.layer}}
 
 
 func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
-	var axis: String = params.get("axis", "horizontal")
-	var mode: String = params.get("mode", "flip")
+	var image: Image = target.image
+	var axis: String = str(params.get("axis", "horizontal"))
+	var mode: String = str(params.get("mode", "flip"))
 	var w := image.get_width()
 	var h := image.get_height()
 	var new_img := image.duplicate()
@@ -923,8 +1064,150 @@ func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
 		else:
 			new_img.flip_x()
 
-	_commit_image_change(new_img, "Mirror / Flip Layer")
-	return {"success": true, "data": {"axis": axis, "mode": mode}}
+	_commit_image_change(new_img, "Mirror / Flip Layer", target.frame, target.layer)
+	return {"success": true, "data": {"axis": axis, "mode": mode, "frame": target.frame, "layer": target.layer}}
+
+
+func _cmd_transform_cel(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var dx: int = int(params.get("dx", 0))
+	var dy: int = int(params.get("dy", 0))
+	var wrap_around: bool = bool(params.get("wrap_around", false))
+
+	var w := image.get_width()
+	var h := image.get_height()
+	var new_image := Image.create(w, h, false, Image.FORMAT_RGBA8)
+
+	var shifted_pixels := 0
+	for y in range(h):
+		for x in range(w):
+			var src_px := image.get_pixel(x, y)
+			if src_px.a > 0.001:
+				var nx := x + dx
+				var ny := y + dy
+				if wrap_around:
+					nx = posmod(nx, w)
+					ny = posmod(ny, h)
+				if nx >= 0 and nx < w and ny >= 0 and ny < h:
+					new_image.set_pixel(nx, ny, src_px)
+					shifted_pixels += 1
+
+	_commit_image_change(new_image, "Transform Cel (%d, %d)" % [dx, dy], target.frame, target.layer)
+	return {"success": true, "data": {"dx": dx, "dy": dy, "wrap_around": wrap_around, "shifted_pixels": shifted_pixels, "frame": target.frame, "layer": target.layer}}
+
+
+func _cmd_rotate_cel(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var angle: int = int(params.get("angle", 90))
+
+	var new_image: Image = image.duplicate()
+	if angle == 90:
+		new_image.rotate_90(CLOCKWISE)
+	elif angle == 180:
+		new_image.rotate_180()
+	elif angle == 270 or angle == -90:
+		new_image.rotate_90(COUNTERCLOCKWISE)
+	else:
+		return {"success": false, "error": "Angle must be 90, 180, or 270 degrees"}
+
+	_commit_image_change(new_image, "Rotate Cel %d°" % angle, target.frame, target.layer)
+	return {"success": true, "data": {"angle": angle, "frame": target.frame, "layer": target.layer}}
+
+
+# ─────────────────────────────────────────────
+# INSPECTION COMMANDS
+# ─────────────────────────────────────────────
+
+func _cmd_get_pixel(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var x: int = int(params.get("x", 0))
+	var y: int = int(params.get("y", 0))
+
+	if x < 0 or x >= image.get_width() or y < 0 or y >= image.get_height():
+		return {"success": false, "error": "Coordinates (%d, %d) out of canvas bounds (%d×%d)" % [x, y, image.get_width(), image.get_height()]}
+
+	var col: Color = image.get_pixel(x, y)
+	return {
+		"success": true,
+		"data": {
+			"x": x,
+			"y": y,
+			"color": "#" + col.to_html(),
+			"r": col.r8,
+			"g": col.g8,
+			"b": col.b8,
+			"a": col.a8,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
+
+
+func _cmd_get_pixels(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var coords: Array = params.get("coords", [])
+	var results: Array = []
+	var w := image.get_width()
+	var h := image.get_height()
+
+	for pt in coords:
+		if not pt is Dictionary:
+			continue
+		var px: int = int(pt.get("x", 0))
+		var py: int = int(pt.get("y", 0))
+		if px >= 0 and px < w and py >= 0 and py < h:
+			var col: Color = image.get_pixel(px, py)
+			results.append({"x": px, "y": py, "color": "#" + col.to_html(), "r": col.r8, "g": col.g8, "b": col.b8, "a": col.a8})
+		else:
+			results.append({"x": px, "y": py, "color": null, "error": "out_of_bounds"})
+
+	return {"success": true, "data": {"pixels": results, "count": results.size(), "frame": target.frame, "layer": target.layer}}
+
+
+func _cmd_get_region(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var x: int = int(params.get("x", 0))
+	var y: int = int(params.get("y", 0))
+	var width: int = int(params.get("width", 16))
+	var height: int = int(params.get("height", 16))
+
+	var w := image.get_width()
+	var h := image.get_height()
+
+	x = clampi(x, 0, w - 1)
+	y = clampi(y, 0, h - 1)
+	width = clampi(width, 1, w - x)
+	height = clampi(height, 1, h - y)
+
+	var rows: Array = []
+	for ry in range(y, y + height):
+		var row: Array = []
+		for rx in range(x, x + width):
+			var col: Color = image.get_pixel(rx, ry)
+			row.append("#" + col.to_html())
+		rows.append(row)
+
+	return {"success": true, "data": {"x": x, "y": y, "width": width, "height": height, "grid": rows, "frame": target.frame, "layer": target.layer}}
 
 
 # ─────────────────────────────────────────────
@@ -956,10 +1239,11 @@ func _cmd_get_color(_params: Dictionary) -> Dictionary:
 
 
 func _cmd_color_replace(params: Dictionary) -> Dictionary:
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
+	var image: Image = target.image
 	var old_color := _parse_color(params, "old_color", Color.BLACK)
 	var new_color := _parse_color(params, "new_color", Color.WHITE)
 	var tolerance: float = float(params.get("tolerance", 0.05))
@@ -978,15 +1262,16 @@ func _cmd_color_replace(params: Dictionary) -> Dictionary:
 					modified_img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, px.a))
 					replaced_count += 1
 
-	_commit_image_change(modified_img, "Color Replace")
-	return {"success": true, "data": {"replaced_pixels": replaced_count, "old_color": old_color.to_html(), "new_color": new_color.to_html()}}
+	_commit_image_change(modified_img, "Color Replace", target.frame, target.layer)
+	return {"success": true, "data": {"replaced_pixels": replaced_count, "old_color": old_color.to_html(), "new_color": new_color.to_html(), "frame": target.frame, "layer": target.layer}}
 
 
 func _cmd_adjust_hsv(params: Dictionary) -> Dictionary:
-	var image := _get_current_image()
-	if image == null:
-		return {"success": false, "error": "No active pixel cel"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
+	var image: Image = target.image
 	var hue_shift: float = float(params.get("hue_shift", 0.0))
 	var saturation_mult: float = float(params.get("saturation", 1.0))
 	var value_mult: float = float(params.get("value", 1.0))
@@ -1009,8 +1294,8 @@ func _cmd_adjust_hsv(params: Dictionary) -> Dictionary:
 				modified_img.set_pixel(x, y, new_col)
 				modified_count += 1
 
-	_commit_image_change(modified_img, "Adjust HSV")
-	return {"success": true, "data": {"modified_pixels": modified_count, "hue_shift": hue_shift, "saturation": saturation_mult, "value": value_mult}}
+	_commit_image_change(modified_img, "Adjust HSV", target.frame, target.layer)
+	return {"success": true, "data": {"modified_pixels": modified_count, "hue_shift": hue_shift, "saturation": saturation_mult, "value": value_mult, "frame": target.frame, "layer": target.layer}}
 
 
 # ─────────────────────────────────────────────
@@ -1103,6 +1388,54 @@ func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "visible": visible}}
+
+
+func _cmd_set_layer_name(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var index: int = int(params.get("index", project.current_layer))
+	var name: String = str(params.get("name", "")).strip_edges()
+
+	if index < 0 or index >= project.layers.size():
+		return {"success": false, "error": "Invalid layer index: %d" % index}
+	if name == "":
+		return {"success": false, "error": "Layer name cannot be empty"}
+
+	var old_name: String = project.layers[index].name
+	project.layers[index].name = name
+	return {"success": true, "data": {"index": index, "old_name": old_name, "new_name": name}}
+
+
+func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var from_index: int = int(params.get("from_index", -1))
+	var to_index: int = int(params.get("to_index", -1))
+
+	if from_index < 0 or from_index >= project.layers.size():
+		return {"success": false, "error": "Invalid from_index: %d" % from_index}
+	if to_index < 0 or to_index >= project.layers.size():
+		return {"success": false, "error": "Invalid to_index: %d" % to_index}
+	if from_index == to_index:
+		return {"success": true, "data": {"from_index": from_index, "to_index": to_index, "message": "No change"}}
+
+	if _api.project.has_method("move_layer"):
+		_api.project.move_layer(from_index, to_index)
+	elif project.has_method("move_layers"):
+		project.move_layers(PackedInt32Array([from_index]), to_index)
+	elif project.has_method("move_layer"):
+		project.move_layer(from_index, to_index)
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
+	return {"success": true, "data": {"from_index": from_index, "to_index": to_index}}
 
 
 func _cmd_get_layers(_params: Dictionary) -> Dictionary:
@@ -1325,12 +1658,11 @@ func _cmd_clear_cel(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
 
 	var cel = project.frames[frame_index].cels[layer_index]
-	if cel.get_class_name() != "PixelCel":
+	if cel == null or cel.get_class_name() != "PixelCel":
 		return {"success": false, "error": "Target cel is not a PixelCel"}
 
-	var image: Image = cel.get_image()
-	image.fill(Color.TRANSPARENT)
-	_api.project.set_pixelcel_image(image, frame_index, layer_index)
+	var cleared_img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
+	_commit_image_change(cleared_img, "Clear Cel", frame_index, layer_index)
 	return {"success": true, "data": {"frame": frame_index, "layer": layer_index}}
 
 

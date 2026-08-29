@@ -58,7 +58,7 @@ function generateRamp(baseHex: string): {
 export function registerProceduralTools(server: McpServer): void {
   server.tool(
     "apply_outline",
-    "Automatically generate an outline around all non-transparent pixels on the active layer. Great for character silhouettes and game items.",
+    "Automatically generate an outline around all non-transparent pixels on the target layer. Great for character silhouettes and game items.",
     {
       color: z
         .string()
@@ -70,15 +70,17 @@ export function registerProceduralTools(server: McpServer): void {
       inside: coerceBool()
         .default(false)
         .describe("If true, replaces outer pixels of the sprite; if false, expands into transparent pixels around the sprite"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ color, thickness, inside }) => {
-      const result = await sendCommand("apply_outline", { color, thickness, inside });
+    async ({ color, thickness, inside, layer, frame }) => {
+      const result = await sendCommand("apply_outline", { color, thickness, inside, layer, frame });
       if (result.success && result.data) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Outline applied: ${result.data.outline_pixels} pixels with color ${color} (thickness: ${thickness}px, ${inside ? "inner" : "outer"})`,
+              text: `✅ Outline applied: ${result.data.outline_pixels} pixels with color ${color} (thickness: ${thickness}px, ${inside ? "inner" : "outer"}) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };
@@ -89,7 +91,7 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "mirror_layer",
-    "Mirror or flip the active cel image. Essential for creating symmetrical characters, monsters, weapons, chests, and vehicles.",
+    "Mirror or flip the target cel image. Essential for creating symmetrical characters, monsters, weapons, chests, and vehicles.",
     {
       axis: z
         .enum(["horizontal", "vertical"])
@@ -99,14 +101,16 @@ export function registerProceduralTools(server: McpServer): void {
         .enum(["flip", "mirror_left_to_right", "mirror_right_to_left", "mirror_top_to_bottom"])
         .default("mirror_left_to_right")
         .describe("Operation mode: 'flip' (flips entire layer) or 'mirror_left_to_right' (copies left half onto right half)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ axis, mode }) => {
-      const result = await sendCommand("mirror_layer", { axis, mode });
+    async ({ axis, mode, layer, frame }) => {
+      const result = await sendCommand("mirror_layer", { axis, mode, layer, frame });
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Cel mirrored (${mode})` : `❌ ${result.error}`,
+            text: result.success ? `✅ Cel mirrored (${mode}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]` : `❌ ${result.error}`,
           },
         ],
       };
@@ -144,8 +148,10 @@ export function registerProceduralTools(server: McpServer): void {
       color1: z.string().describe("First hex color (e.g. highlight or base)"),
       color2: z.string().describe("Second hex color (e.g. shadow)"),
       pattern: z.enum(["checker_50", "light_25", "dense_75"]).default("checker_50").describe("Dither density"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, width, height, color1, color2, pattern }) => {
+    async ({ x, y, width, height, color1, color2, pattern, layer, frame }) => {
       const pixels: Array<{ x: number; y: number; color: string }> = [];
 
       for (let py = y; py < y + height; py++) {
@@ -162,13 +168,13 @@ export function registerProceduralTools(server: McpServer): void {
         }
       }
 
-      const result = await sendCommand("draw_pixels", { pixels });
+      const result = await sendCommand("draw_pixels", { pixels, layer, frame });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Dither applied at (${x},${y}) size ${width}×${height} (${pattern})`
+              ? `✅ Dither applied at (${x},${y}) size ${width}×${height} (${pattern}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
