@@ -79,10 +79,91 @@ export function registerCanvasTools(server: McpServer): void {
   );
 
   server.tool(
-    "save_project",
-    "Save the current Pixelorama project (.pxo file). Optionally specify a file path.",
+    "list_canvases",
+    "List all open canvas/project tabs in Pixelorama with their index, name, dimensions, frame count, layer count, save path, and active status.",
+    {},
+    async () => {
+      const result = await sendCommand("list_canvases", {});
+      if (result.success && result.data) {
+        const d = result.data;
+        const list = (d.canvases as Array<{
+          index: number;
+          name: string;
+          width: number;
+          height: number;
+          layers: number;
+          frames: number;
+          save_path: string;
+          has_unsaved_changes: boolean;
+          is_active: boolean;
+        }>)
+          .map(
+            (c) =>
+              `  [${c.index}] ${c.is_active ? "👉 " : "   "}"${c.name}" (${c.width}×${c.height}, ${c.layers} layers, ${c.frames} frames)${c.save_path ? ` [${c.save_path}]` : " [unsaved]"}${c.has_unsaved_changes ? " ⚠️" : ""}`
+          )
+          .join("\n");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Open Canvases (${d.total_canvases} total, active: [${d.active_index}]):\n${list}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "switch_canvas",
+    "Switch active focus to a different open canvas/project tab by its index.",
     {
-      path: z.string().optional().describe("Optional file path to save the project (.pxo file)"),
+      index: coerceInt(0).describe("Canvas/project tab index to switch to (0-based)"),
+    },
+    async ({ index }) => {
+      const result = await sendCommand("switch_canvas", { index });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Switched to canvas [${result.data?.active_index}] "${result.data?.name}" (${result.data?.width}×${result.data?.height})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "close_canvas",
+    "Close an open canvas/project tab in Pixelorama by its index.",
+    {
+      index: coerceInt(0).optional().describe("Canvas index to close (defaults to currently active canvas)"),
+    },
+    async ({ index }) => {
+      const params: Record<string, unknown> = {};
+      if (index !== undefined) params.index = index;
+      const result = await sendCommand("close_canvas", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Closed canvas [${result.data?.closed_index}] "${result.data?.closed_name}". Remaining canvases: ${result.data?.remaining_canvases} (active: [${result.data?.active_index}])`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "save_project",
+    "Save the active project to Pixelorama's native .pxo format (preserves all layers, animation frames, palettes, and cels). Provide 'path' to save a new project or specify a target file path.",
+    {
+      path: z.string().optional().describe("File path to save the .pxo project file (e.g. '/path/to/my_art.pxo')"),
     },
     async ({ path }) => {
       const params: Record<string, unknown> = {};

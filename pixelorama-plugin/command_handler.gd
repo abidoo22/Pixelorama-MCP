@@ -25,6 +25,9 @@ func _register_tools() -> void:
 	# Canvas & Project
 	_tool_registry["create_canvas"] = Callable(self, "_cmd_create_canvas")
 	_tool_registry["get_canvas_info"] = Callable(self, "_cmd_get_canvas_info")
+	_tool_registry["list_canvases"] = Callable(self, "_cmd_list_canvases")
+	_tool_registry["switch_canvas"] = Callable(self, "_cmd_switch_canvas")
+	_tool_registry["close_canvas"] = Callable(self, "_cmd_close_canvas")
 	_tool_registry["save_project"] = Callable(self, "_cmd_save_project")
 	_tool_registry["export_image"] = Callable(self, "_cmd_export_image")
 	_tool_registry["get_canvas_snapshot"] = Callable(self, "_cmd_get_canvas_snapshot")
@@ -213,8 +216,13 @@ func _cmd_create_canvas(params: Dictionary) -> Dictionary:
 	if fill_color_hex != "" and Color.html_is_valid(fill_color_hex):
 		fill_color = Color.html(fill_color_hex)
 
+	var frames: Array = []
+	var frame_script = load("res://src/Classes/Frame.gd")
+	if frame_script:
+		frames = Array([], TYPE_OBJECT, "RefCounted", frame_script)
+
 	var project = _api.project.new_project(
-		[] as Array[Frame],
+		frames,
 		name,
 		Vector2(width, height),
 		fill_color
@@ -249,6 +257,162 @@ func _cmd_get_canvas_info(_params: Dictionary) -> Dictionary:
 			"frames": project.frames.size(),
 			"current_frame": project.current_frame,
 			"current_layer": project.current_layer,
+		}
+	}
+
+
+func _cmd_list_canvases(_params: Dictionary) -> Dictionary:
+	var global = _api.get_node_or_null("/root/Global")
+	var projects_list: Array = []
+	var active_index: int = 0
+
+	if global and "projects" in global:
+		if "current_project_index" in global:
+			active_index = int(global.current_project_index)
+		var projects_arr: Array = global.projects
+		for i in range(projects_arr.size()):
+			var p = projects_arr[i]
+			if p:
+				projects_list.append({
+					"index": i,
+					"name": p.name,
+					"width": int(p.size.x),
+					"height": int(p.size.y),
+					"layers": p.layers.size(),
+					"frames": p.frames.size(),
+					"save_path": p.save_path,
+					"has_unsaved_changes": p.has_changed if "has_changed" in p else false,
+					"is_active": (i == active_index)
+				})
+	elif _api.project.current_project:
+		var p = _api.project.current_project
+		projects_list.append({
+			"index": 0,
+			"name": p.name,
+			"width": int(p.size.x),
+			"height": int(p.size.y),
+			"layers": p.layers.size(),
+			"frames": p.frames.size(),
+			"save_path": p.save_path,
+			"has_unsaved_changes": p.has_changed if "has_changed" in p else false,
+			"is_active": true
+		})
+
+	return {
+		"success": true,
+		"data": {
+			"total_canvases": projects_list.size(),
+			"active_index": active_index,
+			"canvases": projects_list
+		}
+	}
+
+
+func _cmd_switch_canvas(params: Dictionary) -> Dictionary:
+	var target_index: int = int(params.get("index", 0))
+	var global = _api.get_node_or_null("/root/Global")
+
+	if global and "projects" in global:
+		var projects_arr: Array = global.projects
+		if target_index < 0 or target_index >= projects_arr.size():
+			return {
+				"success": false,
+				"error": "Canvas index %d out of bounds (0..%d)" % [target_index, max(0, projects_arr.size() - 1)]
+			}
+
+		if "tabs" in global and global.tabs:
+			global.tabs.current_tab = target_index
+		else:
+			global.current_project_index = target_index
+			_api.project.current_project = projects_arr[target_index]
+
+		var active_p = projects_arr[target_index]
+		return {
+			"success": true,
+			"data": {
+				"active_index": target_index,
+				"name": active_p.name,
+				"width": int(active_p.size.x),
+				"height": int(active_p.size.y),
+				"message": "Switched to canvas [%d] '%s'" % [target_index, active_p.name]
+			}
+		}
+	elif _api.project.current_project:
+		if target_index == 0:
+			var p = _api.project.current_project
+			return {
+				"success": true,
+				"data": {
+					"active_index": 0,
+					"name": p.name,
+					"width": int(p.size.x),
+					"height": int(p.size.y),
+					"message": "Already on active canvas [0]"
+				}
+			}
+		return {"success": false, "error": "Canvas index out of bounds: only 1 canvas open"}
+
+	return {"success": false, "error": "No open canvases"}
+
+
+func _cmd_close_canvas(params: Dictionary) -> Dictionary:
+	var global = _api.get_node_or_null("/root/Global")
+	if not global or not ("projects" in global):
+		return {"success": false, "error": "Global project manager not accessible"}
+
+	var projects_arr: Array = global.projects
+	if projects_arr.is_empty():
+		return {"success": false, "error": "No open canvases to close"}
+
+	var cur_idx: int = int(global.current_project_index) if "current_project_index" in global else 0
+	var target_index: int = int(params.get("index", cur_idx))
+	if target_index < 0 or target_index >= projects_arr.size():
+		return {
+			"success": false,
+			"error": "Canvas index %d out of bounds (0..%d)" % [target_index, projects_arr.size() - 1]
+		}
+
+	var closed_name = projects_arr[target_index].name
+
+	if "tabs" in global and global.tabs:
+		if global.tabs.has_method("tab_close"):
+			global.tabs.tab_close(target_index)
+		elif global.has_method("close_project"):
+			global.close_project(target_index)
+		else:
+			projects_arr.remove_at(target_index)
+			if projects_arr.is_empty():
+				var fallback_frames: Array = []
+				var fallback_frame_script = load("res://src/Classes/Frame.gd")
+				if fallback_frame_script:
+					fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
+				_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
+			else:
+				var next_index = clampi(target_index, 0, projects_arr.size() - 1)
+				global.tabs.current_tab = next_index
+	else:
+		projects_arr.remove_at(target_index)
+		if projects_arr.is_empty():
+			var fallback_frames: Array = []
+			var fallback_frame_script = load("res://src/Classes/Frame.gd")
+			if fallback_frame_script:
+				fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
+			_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
+		else:
+			var next_index = clampi(target_index, 0, projects_arr.size() - 1)
+			_api.project.current_project = projects_arr[next_index]
+
+	var remaining_count: int = global.projects.size()
+	var new_active_index: int = int(global.current_project_index) if "current_project_index" in global else 0
+
+	return {
+		"success": true,
+		"data": {
+			"closed_index": target_index,
+			"closed_name": closed_name,
+			"remaining_canvases": remaining_count,
+			"active_index": new_active_index,
+			"message": "Closed canvas [%d] '%s'" % [target_index, closed_name]
 		}
 	}
 

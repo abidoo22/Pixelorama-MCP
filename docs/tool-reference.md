@@ -56,15 +56,80 @@ Returns dimensions, layers, and frame count of the active project.
 
 ---
 
-### `save_project`
-Saves the active project to a `.pxo` file.
+### `list_canvases` ⭐ Tab Management
+Lists all open canvas/project tabs in Pixelorama with full metadata.
+
+```json
+{
+  "success": true,
+  "data": {
+    "total_canvases": 2,
+    "active_index": 0,
+    "canvases": [
+      {
+        "index": 0,
+        "name": "Knight_Sprite",
+        "width": 32,
+        "height": 32,
+        "layers": 3,
+        "frames": 4,
+        "save_path": "/home/user/knight.pxo",
+        "has_unsaved_changes": false,
+        "is_active": true
+      },
+      {
+        "index": 1,
+        "name": "Dungeon_Tileset",
+        "width": 64,
+        "height": 64,
+        "layers": 1,
+        "frames": 1,
+        "save_path": "",
+        "has_unsaved_changes": true,
+        "is_active": false
+      }
+    ]
+  }
+}
+```
+
+---
+
+### `switch_canvas`
+Switches active focus to a different open project tab by its index.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | ✅ | Absolute path (e.g. `/home/user/project.pxo`) |
+| `index` | number | ✅ | 0-based index of the canvas tab to switch to |
 
 ```json
-{ "success": true }
+{ "success": true, "data": { "active_index": 1, "name": "Dungeon_Tileset", "width": 64, "height": 64 } }
+```
+
+---
+
+### `close_canvas`
+Closes an open canvas/project tab.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `index` | number | — | Canvas index to close (defaults to active canvas) |
+
+```json
+{ "success": true, "data": { "closed_index": 1, "closed_name": "Dungeon_Tileset", "remaining_canvases": 1, "active_index": 0 } }
+```
+
+---
+
+### `save_project`
+Saves the active project to Pixelorama's native `.pxo` file format (preserves all layers, animation frames, palettes, and cels).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | — | Absolute file path to save `.pxo` project (e.g. `/home/user/art.pxo`). For new untitled projects, specify `path` to save directly to disk. |
+
+```json
+{ "success": true, "data": { "path": "/home/user/project.pxo" } }
 ```
 
 ---

@@ -109,7 +109,7 @@ Then ask Claude: *"Create a 64×64 canvas and draw a shiny red apple with a drop
 ## 📖 Documentation
 
 - [Getting Started](docs/getting-started.md) — Setup, prerequisites, client integration, and image import
-- [Tool Reference](docs/tool-reference.md) — All 35+ MCP tools with parameters and return formats
+- [Tool Reference](docs/tool-reference.md) — All 70 MCP tools with parameters and return formats
 - [Plugin Setup](docs/plugin-setup.md) — Compiling the GDScript plugin, troubleshooting quarantine
 - [Agentic Drawing Playbook](AGENTIC_DRAWING_PLAYBOOK.md) — Shading math, geometry recipes, and batch optimization for AI agents
 

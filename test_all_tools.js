@@ -52,9 +52,13 @@ async function run() {
     }
   }
 
-  // 1. Canvas & Viewport Tools
-  await test("create_canvas", { width: 64, height: 64, name: "MCPMasterTest" });
+  // 1. Canvas & Viewport Tools (including multi-canvas tab navigation)
+  await test("create_canvas", { width: 64, height: 64, name: "Canvas_A" });
+  await test("create_canvas", { width: 32, height: 32, name: "Canvas_B" });
+  await test("list_canvases", {});
+  await test("switch_canvas", { index: 0 });
   await test("get_canvas_info", {});
+  await test("close_canvas", { index: 1 });
   await test("fit_viewport", {});
 
   // 2. Color & Palette Tools
