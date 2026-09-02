@@ -174,7 +174,7 @@ export function registerCanvasTools(server: McpServer): void {
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Project saved to: ${result.data?.path}`
+              ? `✅ Project saved to: ${result.data?.path}${result.data?.size_bytes !== undefined ? ` (${result.data.size_bytes} bytes)` : ""}`
               : `❌ ${result.error}`,
           },
         ],

@@ -52,13 +52,25 @@ async function run() {
     }
   }
 
-  // 1. Canvas & Viewport Tools (including multi-canvas tab navigation)
+  // 1. Canvas & Viewport Tools (including multi-canvas tab navigation & state verification)
   await test("create_canvas", { width: 64, height: 64, name: "Canvas_A" });
   await test("create_canvas", { width: 32, height: 32, name: "Canvas_B" });
-  await test("list_canvases", {});
+  await test("list_canvases", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    return text.includes("Canvas_A") && text.includes("Canvas_B");
+  });
   await test("switch_canvas", { index: 0 });
+  // Query canvases and close Canvas_B
+  const listRes = await registered["list_canvases"].handler({});
+  const listText = listRes?.content?.[0]?.text || "";
+  const matchB = listText.match(/\[(\d+)\][^\n]*"Canvas_B"/);
+  const idxB = matchB ? parseInt(matchB[1], 10) : 2;
+  await test("close_canvas", { index: idxB });
+  await test("list_canvases", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    return text.includes("Canvas_A") && !text.includes("Canvas_B");
+  });
   await test("get_canvas_info", {});
-  await test("close_canvas", { index: 1 });
   await test("fit_viewport", {});
 
   // 2. Color & Palette Tools
@@ -117,28 +129,49 @@ async function run() {
   await test("transform_cel", { dx: 2, dy: 2 });
   await test("rotate_cel", { angle: 90 });
 
-  // 9. Layers & Stack Management
+  // 9. Layers & Stack Management (with strict reorder validation)
   await test("add_layer", { name: "OverlayFX", type: 0 });
   await test("set_layer_name", { index: 1, name: "RenamedOverlay" });
   await test("reorder_layers", { from_index: 0, to_index: 1 });
-  await test("get_layers", {});
+  await test("get_layers", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    // After reordering 0 -> 1, RenamedOverlay should be index 0
+    return text.includes("[0] RenamedOverlay");
+  });
   await test("set_layer_opacity", { index: 1, opacity: 0.8 });
   await test("set_layer_blend_mode", { index: 1, blend_mode: 0 });
   await test("set_layer_visibility", { index: 1, visible: true });
   await test("delete_layer", { index: 1 });
 
-  // 10. Animation Frames & Navigation
+  // 10. Animation Frames & Cel Copying (with state verification)
   await test("add_frame", {});
   await test("set_fps", { fps: 12 });
   await test("get_fps", {});
   await test("set_frame_duration", { index: 0, duration: 2.0 });
   await test("duplicate_frame", { index: 0 });
-  await test("get_frames", {});
-  await test("switch_frame", { index: 1 });
-  await test("switch_cel", { frame: 1, layer: 0 });
-  await test("copy_cel", { src_frame: 0, src_layer: 0, dst_frame: 1, dst_layer: 0 });
-  await test("clear_cel", { frame: 1, layer: 0 });
+  await test("switch_frame", { index: 2 });
   await test("delete_frame", { index: 2 });
+  await test("get_frames", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    // Verify current frame index is strictly within bounds (< total)
+    const match = text.match(/current:\s*(\d+),\s*total:\s*(\d+)/i);
+    if (match) {
+      const cur = parseInt(match[1], 10);
+      const total = parseInt(match[2], 10);
+      return cur < total;
+    }
+    return true;
+  });
+  await test("switch_frame", { index: 0 });
+  await test("switch_cel", { frame: 0, layer: 0 });
+  await test("draw_pixel", { x: 5, y: 5, color: "#e74c3c", frame: 0, layer: 0 });
+  await test("copy_cel", { src_frame: 0, src_layer: 0, dst_frame: 1, dst_layer: 0 });
+  await test("get_pixel", { x: 5, y: 5, frame: 1, layer: 0 }, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    // Verify copied cel has the actual non-transparent red pixel
+    return text.includes("e74c3c") || text.includes("#e74c3c");
+  });
+  await test("clear_cel", { frame: 1, layer: 0 });
 
   // 11. Canvas Scaling & Content Auto-Crop
   await test("crop_to_content", {});
@@ -152,10 +185,16 @@ async function run() {
     generate_metadata: true,
   });
 
-  // 13. File Imports, Project Saves & Exports
+  // 13. File Imports, Project Saves & Exports (with strict disk verification)
   const imgPath = path.join(exportDir, "test_full_export.png");
+  const pxoPath = path.join(exportDir, "test_verified_save.pxo");
+  if (fs.existsSync(pxoPath)) fs.unlinkSync(pxoPath);
+
   await test("export_image", { path: imgPath, frame: 0 });
-  await test("save_project", { path: path.join(exportDir, "test_project.pxo") });
+  await test("save_project", { path: pxoPath }, () => {
+    // Assert file actually exists on filesystem and has valid byte size
+    return fs.existsSync(pxoPath) && fs.statSync(pxoPath).size > 0;
+  });
   await test("import_image", { file_path: imgPath, target_width: 32, target_height: 32, remove_background: true });
   await test("export_animation", {
     path: exportDir,
@@ -185,6 +224,16 @@ async function run() {
   } else {
     console.log(`\n✨ Perfect: Every single one of all ${allToolNames.length} registered tools was tested!`);
   }
+
+  // Cleanup temporary test artifacts generated in exportDir
+  try {
+    const files = fs.readdirSync(exportDir);
+    for (const f of files) {
+      if (f.startsWith("test_")) {
+        fs.unlinkSync(path.join(exportDir, f));
+      }
+    }
+  } catch {}
 
   console.log("\n==================================================");
   console.log(`📊 Final Summary: ${passed} Passed, ${failed} Failed out of ${allToolNames.length} MCP Tools`);

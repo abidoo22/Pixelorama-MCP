@@ -374,33 +374,27 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 
 	var closed_name = projects_arr[target_index].name
 
-	if "tabs" in global and global.tabs:
-		if global.tabs.has_method("tab_close"):
-			global.tabs.tab_close(target_index)
-		elif global.has_method("close_project"):
-			global.close_project(target_index)
-		else:
-			projects_arr.remove_at(target_index)
-			if projects_arr.is_empty():
-				var fallback_frames: Array = []
-				var fallback_frame_script = load("res://src/Classes/Frame.gd")
-				if fallback_frame_script:
-					fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
-				_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
-			else:
-				var next_index = clampi(target_index, 0, projects_arr.size() - 1)
-				global.tabs.current_tab = next_index
+	# Remove project from projects array
+	projects_arr.remove_at(target_index)
+
+	# Remove UI tab only if tab_count is still greater than projects count
+	if "tabs" in global and global.tabs and global.tabs.tab_count > projects_arr.size():
+		if target_index < global.tabs.tab_count:
+			global.tabs.remove_tab(target_index)
+
+	if projects_arr.is_empty():
+		var fallback_frames: Array = []
+		var fallback_frame_script = load("res://src/Classes/Frame.gd")
+		if fallback_frame_script:
+			fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
+		_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
 	else:
-		projects_arr.remove_at(target_index)
-		if projects_arr.is_empty():
-			var fallback_frames: Array = []
-			var fallback_frame_script = load("res://src/Classes/Frame.gd")
-			if fallback_frame_script:
-				fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
-			_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
-		else:
-			var next_index = clampi(target_index, 0, projects_arr.size() - 1)
-			_api.project.current_project = projects_arr[next_index]
+		var next_index = clampi(target_index, 0, projects_arr.size() - 1)
+		if "current_project_index" in global:
+			global.current_project_index = next_index
+		if "tabs" in global and global.tabs and global.tabs.tab_count > next_index:
+			global.tabs.current_tab = next_index
+		_api.project.current_project = projects_arr[next_index]
 
 	var remaining_count: int = global.projects.size()
 	var new_active_index: int = int(global.current_project_index) if "current_project_index" in global else 0
@@ -477,12 +471,72 @@ func _cmd_save_project(params: Dictionary) -> Dictionary:
 	if target_path != "":
 		project.save_path = target_path
 
-	var open_save = _api.import.open_save_autoload()
-	if project.save_path != "":
-		open_save.save_pxo(project.save_path)
-		return {"success": true, "data": {"path": project.save_path}}
-	else:
+	if project.save_path == "":
 		return {"success": false, "error": "No save path set. Use Pixelorama's File > Save As first or specify 'path'."}
+
+	var file_path = project.save_path
+	if not file_path.ends_with(".pxo"):
+		file_path += ".pxo"
+		project.save_path = file_path
+
+	var global = _api.get_node_or_null("/root/Global")
+	if global and "current_project" in global:
+		global.current_project = project
+	_api.project.current_project = project
+
+	var open_save = _api.import.open_save_autoload()
+	if open_save == null:
+		open_save = _api.get_node_or_null("/root/OpenSave")
+
+	if open_save:
+		if open_save.has_method("save_pxo_file"):
+			open_save.save_pxo_file(file_path, false)
+		elif open_save.has_method("save_project"):
+			open_save.save_project(file_path)
+		elif open_save.has_method("save_pxo"):
+			open_save.save_pxo(file_path)
+		elif open_save.has_method("save_resource"):
+			open_save.save_resource(file_path, false)
+
+	# Verify file on disk
+	if FileAccess.file_exists(file_path):
+		var fa = FileAccess.open(file_path, FileAccess.READ)
+		var size_bytes: int = fa.get_length() if fa else 0
+		if fa:
+			fa.close()
+		if "has_changed" in project:
+			project.has_changed = false
+		return {
+			"success": true,
+			"data": {
+				"path": file_path,
+				"size_bytes": size_bytes,
+				"message": "Project saved successfully to %s (%d bytes)" % [file_path, size_bytes]
+			}
+		}
+	else:
+		# Direct ResourceSaver fallback
+		var res_err = ResourceSaver.save(project, file_path)
+		if res_err == OK and FileAccess.file_exists(file_path):
+			var fa = FileAccess.open(file_path, FileAccess.READ)
+			var size_bytes: int = fa.get_length() if fa else 0
+			if fa:
+				fa.close()
+			if "has_changed" in project:
+				project.has_changed = false
+			return {
+				"success": true,
+				"data": {
+					"path": file_path,
+					"size_bytes": size_bytes,
+					"message": "Project saved successfully to %s (%d bytes)" % [file_path, size_bytes]
+				}
+			}
+
+		return {
+			"success": false,
+			"error": "Failed to save project file: file was not written to disk at '%s'" % file_path
+		}
 
 
 func _cmd_export_image(params: Dictionary) -> Dictionary:
@@ -1490,13 +1544,24 @@ func _cmd_delete_layer(params: Dictionary) -> Dictionary:
 	var project = _api.project.current_project
 	if project == null:
 		return {"success": false, "error": "No active project"}
+	if project.layers.size() <= 1:
+		return {"success": false, "error": "Cannot delete the only layer in project"}
 
-	var layer_index: int = params.get("index", -1)
+	var layer_index: int = params.get("index", project.current_layer)
 	if layer_index < 0 or layer_index >= project.layers.size():
 		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
 
 	project.remove_layers(PackedInt32Array([layer_index]))
-	return {"success": true, "data": {"message": "Layer %d deleted" % layer_index}}
+	project.current_layer = clampi(project.current_layer, 0, project.layers.size() - 1)
+	_api.project.current_layer = project.current_layer
+	_api.project.select_cels([[project.current_frame, project.current_layer]])
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
+	return {"success": true, "data": {"deleted": layer_index, "remaining_layers": project.layers.size(), "current_layer": project.current_layer}}
 
 
 func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
@@ -1587,19 +1652,42 @@ func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
 	if from_index == to_index:
 		return {"success": true, "data": {"from_index": from_index, "to_index": to_index, "message": "No change"}}
 
-	if _api.project.has_method("move_layer"):
-		_api.project.move_layer(from_index, to_index)
-	elif project.has_method("move_layers"):
-		project.move_layers(PackedInt32Array([from_index]), to_index)
-	elif project.has_method("move_layer"):
-		project.move_layer(from_index, to_index)
+	# Reorder layers array
+	var layer_item = project.layers.pop_at(from_index)
+	project.layers.insert(to_index, layer_item)
+
+	# Reorder corresponding cels across all animation frames
+	for frame in project.frames:
+		if from_index < frame.cels.size():
+			var cel_item = frame.cels.pop_at(from_index)
+			var insert_cel_at: int = mini(to_index, frame.cels.size())
+			frame.cels.insert(insert_cel_at, cel_item)
+
+	# Update active layer index
+	if project.current_layer == from_index:
+		project.current_layer = to_index
+	elif from_index < project.current_layer and to_index >= project.current_layer:
+		project.current_layer -= 1
+	elif from_index > project.current_layer and to_index <= project.current_layer:
+		project.current_layer += 1
+
+	project.current_layer = clampi(project.current_layer, 0, project.layers.size() - 1)
+	_api.project.select_cels([[project.current_frame, project.current_layer]])
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"from_index": from_index, "to_index": to_index}}
+	return {
+		"success": true,
+		"data": {
+			"from_index": from_index,
+			"to_index": to_index,
+			"layers_count": project.layers.size(),
+			"current_layer": project.current_layer
+		}
+	}
 
 
 func _cmd_get_layers(_params: Dictionary) -> Dictionary:
@@ -1677,7 +1765,18 @@ func _cmd_delete_frame(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "Invalid frame index: %d" % frame_index}
 
 	project.remove_frames(PackedInt32Array([frame_index]))
-	return {"success": true, "data": {"deleted": frame_index, "total_frames": project.frames.size()}}
+	project.current_frame = clampi(project.current_frame, 0, project.frames.size() - 1)
+	_api.project.current_frame = project.current_frame
+	_api.project.select_cels([[project.current_frame, project.current_layer]])
+
+	return {
+		"success": true,
+		"data": {
+			"deleted": frame_index,
+			"total_frames": project.frames.size(),
+			"current_frame": project.current_frame
+		}
+	}
 
 
 func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
@@ -1800,11 +1899,17 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 	if dst_cel.get_class_name() != "PixelCel":
 		return {"success": false, "error": "Destination cel is not a PixelCel"}
 
-	# Copy pixels from source to destination
+	# Deep-clone pixels from source to destination
 	var src_image: Image = src_cel.get_image()
-	var dst_image: Image = dst_cel.get_image()
-	dst_image.blit_rect(src_image, Rect2i(0, 0, src_image.get_width(), src_image.get_height()), Vector2i.ZERO)
-	_api.project.set_pixelcel_image(dst_image, dst_frame, dst_layer)
+	var copy_img = Image.create_empty(src_image.get_width(), src_image.get_height(), false, Image.FORMAT_RGBA8)
+	copy_img.copy_from(src_image)
+	_api.project.set_pixelcel_image(copy_img, dst_frame, dst_layer)
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
 	return {"success": true, "data": {"src_frame": src_frame, "src_layer": src_layer, "dst_frame": dst_frame, "dst_layer": dst_layer}}
 
 

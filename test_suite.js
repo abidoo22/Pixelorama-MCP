@@ -92,6 +92,17 @@ async function runTests() {
   });
   console.log(`✅ [12/12] Animation & Spritesheet Export:`, exportRes.success ? `Saved to ${exportRes.data.path}` : exportRes.error);
 
+  // Cleanup test artifacts
+  try {
+    const fsModule = await import("fs");
+    const files = fsModule.readdirSync(exportDir);
+    for (const f of files) {
+      if (f.startsWith("test_")) {
+        fsModule.unlinkSync(pathModule.join(exportDir, f));
+      }
+    }
+  } catch {}
+
   console.log("\n==================================================");
   console.log("🎉 ALL 12/12 TEST SUITE CHECKS COMPLETED!");
   console.log("==================================================");
