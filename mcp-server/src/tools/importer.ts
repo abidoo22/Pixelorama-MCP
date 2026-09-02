@@ -273,4 +273,39 @@ export function registerImporterTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "import_spritesheet",
+    "Slice an external spritesheet (e.g. 128×32 into 4 frames of 32×32) and import each tile as a sequential animation frame in Pixelorama.",
+    {
+      path: z.string().describe("Absolute file path to the spritesheet image on disk"),
+      frame_width: coerceInt(1).default(32).describe("Width of a single animation frame in pixels"),
+      frame_height: coerceInt(1).default(32).describe("Height of a single animation frame in pixels"),
+      start_frame: coerceInt(0).default(0).describe("Starting frame index in timeline to place imported frames"),
+      max_frames: coerceInt(1).optional().describe("Maximum number of frames to import (-1 or omitted for all)"),
+      layer: coerceInt(0).optional().describe("Layer index to import frames onto (defaults to active layer)"),
+    },
+    async ({ path, frame_width, frame_height, start_frame, max_frames, layer }) => {
+      const params: Record<string, unknown> = {
+        path,
+        frame_width,
+        frame_height,
+        start_frame,
+      };
+      if (max_frames !== undefined) params.max_frames = max_frames;
+      if (layer !== undefined) params.layer = layer;
+
+      const result = await sendCommand("import_spritesheet", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Spritesheet imported: ${result.data?.frames_imported} frames (${frame_width}×${frame_height}, ${result.data?.columns} cols × ${result.data?.rows} rows). Total project frames: ${result.data?.total_frames}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

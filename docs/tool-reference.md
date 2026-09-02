@@ -773,3 +773,206 @@ Exports a tileset PNG and generates a native Godot 4 `TileSet` text resource (`.
 | `target_dir` | string | — | Destination directory (e.g. `"/path/to/godot_project/assets/tilesets/"`) |
 | `tileset_name` | string | — | Base name for tileset (e.g. `"dungeon_tiles"`) |
 | `tile_size` | number | `16` | Tile size in pixels (e.g. 16 or 32) |
+
+---
+
+## 13. Advanced Project & Viewport Guides
+
+### `open_project`
+Open an existing native Pixelorama `.pxo` project file from disk.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | ✅ | Absolute file path to the `.pxo` file |
+
+---
+
+### `set_tile_mode`
+Enable Pixelorama's native 3×3 live repeating viewport tile mode for seamless textures.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `"both"` | `"off"`, `"x"`, `"y"`, or `"both"` |
+
+---
+
+### `set_symmetry_guide`
+Enable and configure horizontal & vertical symmetry guide planes.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `horizontal` | boolean | `false` | Enable horizontal symmetry axis |
+| `vertical` | boolean | `false` | Enable vertical symmetry axis |
+| `x_pos` | number | `center` | X position for vertical mirror line |
+| `y_pos` | number | `center` | Y position for horizontal mirror line |
+
+---
+
+### `set_onion_skinning`
+Configure past/future frame ghosting overlays in the live animation editor.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Enable/disable onion skinning |
+| `past_frames` | number | `1` | Number of past frames shown |
+| `future_frames` | number | `1` | Number of future frames shown |
+| `blue_red_tint` | boolean | `true` | Blue/Red color tinting |
+
+---
+
+## 14. Animation Tags & Timeline Superchargers
+
+### `add_animation_tag`
+Define named animation ranges (e.g. "idle", "walk", "attack") with color bands in the timeline.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | ✅ | Tag name (e.g. `"attack"`) |
+| `from_frame` | number | ✅ | Start frame index (0-based) |
+| `to_frame` | number | ✅ | End frame index (0-based) |
+| `color` | string | `"#ff5500"` | Hex color for timeline tag marker |
+
+---
+
+### `get_animation_tags`
+List all animation tracks, their frame spans, and marker colors.
+
+---
+
+### `delete_animation_tag`
+Delete an animation tag by name or index.
+
+---
+
+### `reverse_frames`
+Reverse the order of timeline frames (or a sub-range) for ping-pong loops.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `from_frame` | number | `0` | Starting frame index |
+| `to_frame` | number | `last` | Ending frame index |
+
+---
+
+### `tween_cel`
+Interpolate cel translation `(dx, dy)` across intermediate frames for smooth motion.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `src_frame` | number | — | Starting frame index |
+| `dst_frame` | number | — | Target frame index |
+| `dx`, `dy` | number | `0` | Total translation offsets |
+
+---
+
+### `export_gif` / `export_apng`
+Render animated `.gif` or `.apng` directly to disk.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | ✅ | Destination file path |
+
+---
+
+### `export_aseprite_json`
+Export a spritesheet PNG alongside standard Aseprite-compatible `.json` metadata (Unity, Godot, Unreal, Phaser).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `target_dir` | string | ✅ | Output directory |
+| `base_name` | string | project name | Filename prefix |
+
+---
+
+### `import_spritesheet`
+Slice an external spritesheet image into sequential timeline frames in Pixelorama.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | — | File path to spritesheet |
+| `frame_width` | number | `32` | Width of single frame |
+| `frame_height` | number | `32` | Height of single frame |
+| `start_frame` | number | `0` | Insert position |
+
+---
+
+## 15. Advanced Selections & Floating Transforms
+
+### `select_by_color` (Magic Wand)
+Select pixels matching target color with tolerance. Contiguous or global.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `color` | string | — | Hex color to match |
+| `tolerance` | number | `0.05` | Match tolerance (0.0 to 1.0) |
+| `contiguous` | boolean | `false` | Flood fill from start coordinates |
+
+---
+
+### `invert_selection`
+Invert the active selection mask.
+
+---
+
+### `transform_selection`
+Shift only the selected pixels by `(dx, dy)` on the active cel.
+
+---
+
+## 16. Layer Operations & Organizations
+
+### `duplicate_layer`
+Clone an entire layer and all its cels across every frame.
+
+---
+
+### `merge_layers`
+Merge a source layer down into a target layer with alpha blending.
+
+---
+
+### `create_layer_group`
+Create a folder / GroupLayer in Pixelorama.
+
+---
+
+## 17. FX, Typography & QA Linters
+
+### `apply_drop_shadow`
+Generate an offset silhouette cast shadow under the sprite or as a new layer.
+
+---
+
+### `apply_glow`
+Generate a soft neon/magic bloom halo around non-transparent pixels.
+
+---
+
+### `apply_gradient`
+Fill an area with linear/radial color gradients and optional Bayer dithering.
+
+---
+
+### `check_seamless_tile`
+Verify and auto-fix tile wrap-around border seams.
+
+---
+
+### `draw_text`
+Render crisp bitmap pixel typography directly onto the canvas.
+
+---
+
+### `get_palette_usage`
+Get a frequency histogram of every color on the canvas.
+
+---
+
+### `clean_isolated_pixels`
+Scan and remove 1px orphan noise pixels.
+
+---
+
+### `remap_to_palette`
+Quantize and snap canvas pixels to the nearest colors in a target palette.
+

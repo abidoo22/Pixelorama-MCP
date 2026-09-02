@@ -340,4 +340,209 @@ export function registerFrameTools(server: McpServer): void {
       return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
     }
   );
+
+  server.tool(
+    "reverse_frames",
+    "Reverse the sequence of animation frames in the timeline (or a sub-range). Ideal for creating ping-pong / breathing / bobbing loops.",
+    {
+      from_frame: coerceInt(0).optional().describe("Starting frame index to reverse (defaults to 0)"),
+      to_frame: coerceInt(0).optional().describe("Ending frame index to reverse (defaults to last frame)"),
+    },
+    async ({ from_frame, to_frame }) => {
+      const params: Record<string, unknown> = {};
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      const result = await sendCommand("reverse_frames", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Frames reversed from [${result.data?.reversed_from}] to [${result.data?.reversed_to}] (Total frames: ${result.data?.total_frames})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "tween_cel",
+    "Interpolate position (dx, dy) across intermediate animation frames between src_frame and dst_frame to create smooth in-betweens.",
+    {
+      src_frame: coerceInt(0).describe("Starting frame index"),
+      dst_frame: coerceInt(0).describe("Ending frame index"),
+      layer: coerceInt(0).optional().describe("Layer index to tween (defaults to active layer)"),
+      dx: coerceInt().default(0).describe("Total horizontal offset to interpolate across frames"),
+      dy: coerceInt().default(0).describe("Total vertical offset to interpolate across frames"),
+    },
+    async ({ src_frame, dst_frame, layer, dx, dy }) => {
+      const params: Record<string, unknown> = { src_frame, dst_frame, dx, dy };
+      if (layer !== undefined) params.layer = layer;
+      const result = await sendCommand("tween_cel", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Tweened ${result.data?.tweened_frames} frames on layer ${result.data?.layer} (dx: ${dx}, dy: ${dy})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "add_animation_tag",
+    "Define a named animation tag range (e.g. 'idle', 'walk', 'attack') with timeline color bands in Pixelorama.",
+    {
+      name: z.string().describe("Animation tag name (e.g. 'walk', 'attack')"),
+      from_frame: coerceInt(0).describe("Starting frame index (0-based)"),
+      to_frame: coerceInt(0).describe("Ending frame index (0-based)"),
+      color: z.string().default("#ff5500").describe("Hex color for timeline tag marker"),
+    },
+    async ({ name, from_frame, to_frame, color }) => {
+      const result = await sendCommand("add_animation_tag", {
+        name,
+        from_frame,
+        to_frame,
+        color,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Animation Tag '${name}' added (Frames ${from_frame}..${to_frame}, Total tags: ${result.data?.total_tags})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "get_animation_tags",
+    "List all defined animation tracks/tags with their frame ranges and marker colors.",
+    {},
+    async () => {
+      const result = await sendCommand("get_animation_tags", {});
+      if (result.success && result.data) {
+        const tags = (result.data.tags as Array<{
+          index: number;
+          name: string;
+          from_frame: number;
+          to_frame: number;
+          color: string;
+          frames_count: number;
+        }>)
+          .map(
+            (t) =>
+              `  [${t.index}] "${t.name}" -> Frames ${t.from_frame}..${t.to_frame} (${t.frames_count} frames, Color: ${t.color})`
+          )
+          .join("\n");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Animation Tags (${result.data.total} total):\n${tags || "  (None)"}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "delete_animation_tag",
+    "Remove an animation tag by its name or index.",
+    {
+      name: z.string().optional().describe("Tag name to delete"),
+      index: coerceInt(0).optional().describe("Tag index to delete"),
+    },
+    async ({ name, index }) => {
+      const params: Record<string, unknown> = {};
+      if (name !== undefined) params.name = name;
+      if (index !== undefined) params.index = index;
+      const result = await sendCommand("delete_animation_tag", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Deleted animation tag '${result.data?.deleted}'. Remaining tags: ${result.data?.remaining_tags}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "export_gif",
+    "Render the current project's animation directly to an animated .gif file on disk.",
+    {
+      path: z.string().describe("Absolute file path to save the .gif file (e.g. '/path/to/animation.gif')"),
+    },
+    async ({ path }) => {
+      const result = await sendCommand("export_gif", { path });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Animated GIF exported to: ${result.data?.path} (${result.data?.frames} frames, ${result.data?.size_bytes ?? ""} bytes)`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "export_apng",
+    "Render the current project's animation directly to an animated .apng file on disk.",
+    {
+      path: z.string().describe("Absolute file path to save the .apng file (e.g. '/path/to/animation.apng')"),
+    },
+    async ({ path }) => {
+      const result = await sendCommand("export_apng", { path });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Animated APNG exported to: ${result.data?.path} (${result.data?.frames} frames)`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "export_aseprite_json",
+    "Export a spritesheet PNG along with standardized Aseprite-compatible .json metadata manifest (supported by Unity, Godot, Phaser, Bevy, GameMaker).",
+    {
+      target_dir: z.string().describe("Directory where the spritesheet PNG and JSON manifest will be saved"),
+      base_name: z.string().optional().describe("Base filename prefix (defaults to project name)"),
+    },
+    async ({ target_dir, base_name }) => {
+      const params: Record<string, unknown> = { target_dir };
+      if (base_name !== undefined) params.base_name = base_name;
+      const result = await sendCommand("export_aseprite_json", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Aseprite JSON & Spritesheet exported successfully:\n  PNG: ${result.data?.png_path}\n  JSON: ${result.data?.json_path}\n  Frames: ${result.data?.frames_count}, Tags: ${result.data?.tags_count}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

@@ -204,4 +204,76 @@ export function registerLayerTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "duplicate_layer",
+    "Duplicate an entire layer and all of its pixel cels across every frame in the project.",
+    {
+      index: coerceInt(0).optional().describe("Layer index to duplicate (defaults to active layer)"),
+    },
+    async ({ index }) => {
+      const params: Record<string, unknown> = {};
+      if (index !== undefined) params.index = index;
+      const result = await sendCommand("duplicate_layer", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Layer duplicated: "${result.data?.name}" at index [${result.data?.new_index}] (Total layers: ${result.data?.total_layers})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "merge_layers",
+    "Merge a source layer down into a target layer (composites cel pixels using alpha blending and removes the source layer).",
+    {
+      source_index: coerceInt(0).optional().describe("Layer index to merge down (defaults to current layer)"),
+      target_index: coerceInt(0).optional().describe("Target layer index to merge into (defaults to layer below source)"),
+    },
+    async ({ source_index, target_index }) => {
+      const params: Record<string, unknown> = {};
+      if (source_index !== undefined) params.source_index = source_index;
+      if (target_index !== undefined) params.target_index = target_index;
+      const result = await sendCommand("merge_layers", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Merged layer into index [${result.data?.merged_into}]. Remaining layers: ${result.data?.remaining_layers}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "create_layer_group",
+    "Create a new folder/GroupLayer in Pixelorama to organize complex multi-layer character or scene rigs.",
+    {
+      name: z.string().default("Group").describe("Group folder name"),
+      above_layer: coerceInt(0).optional().describe("Insert above this layer index (defaults to current layer)"),
+    },
+    async ({ name, above_layer }) => {
+      const params: Record<string, unknown> = { name };
+      if (above_layer !== undefined) params.above_layer = above_layer;
+      const result = await sendCommand("create_layer_group", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Created Layer Group: "${name}" at index [${result.data?.index}] (Total layers: ${result.data?.total_layers})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

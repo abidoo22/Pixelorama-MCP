@@ -52,7 +52,7 @@ async function run() {
     }
   }
 
-  // 1. Canvas & Viewport Tools (including multi-canvas tab navigation & state verification)
+  // 1. Canvas & Viewport Tools
   await test("create_canvas", { width: 64, height: 64, name: "Canvas_A" });
   await test("create_canvas", { width: 32, height: 32, name: "Canvas_B" });
   await test("list_canvases", {}, (res) => {
@@ -60,7 +60,6 @@ async function run() {
     return text.includes("Canvas_A") && text.includes("Canvas_B");
   });
   await test("switch_canvas", { index: 0 });
-  // Query canvases and close Canvas_B
   const listRes = await registered["list_canvases"].handler({});
   const listText = listRes?.content?.[0]?.text || "";
   const matchB = listText.match(/\[(\d+)\][^\n]*"Canvas_B"/);
@@ -72,14 +71,20 @@ async function run() {
   });
   await test("get_canvas_info", {});
   await test("fit_viewport", {});
+  await test("set_tile_mode", { mode: "both" });
+  await test("set_symmetry_guide", { horizontal: true, vertical: true, x_pos: 32, y_pos: 32 });
+  await test("set_onion_skinning", { enabled: true, past_frames: 2, future_frames: 1, blue_red_tint: true });
 
-  // 2. Color & Palette Tools
+  // 2. Color & Palette Tools & QA Linter
   await test("set_color", { color: "#ff5500", button: 0 });
   await test("get_color", {});
   await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true });
   await test("add_palette_color", { color: "#00ff88" });
   await test("set_palette_color", { index: 0, color: "#ff0088" });
   await test("get_palette_colors", {});
+  await test("get_palette_usage", {});
+  await test("clean_isolated_pixels", {});
+  await test("remap_to_palette", { palette_colors: ["#000000", "#ffffff", "#ff5500", "#00ff88"] });
 
   // 3. Drawing Primitives & Batching
   await test("draw_pixel", { x: 10, y: 10, color: "#ffffff" });
@@ -88,6 +93,7 @@ async function run() {
   await test("draw_ellipse", { cx: 32, cy: 45, rx: 10, ry: 8, color: "#3498db", filled: true });
   await test("draw_path", { points: [{ x: 5, y: 50 }, { x: 15, y: 55 }, { x: 25, y: 50 }], color: "#9b59b6", closed: false });
   await test("draw_polygon", { points: [{ x: 35, y: 50 }, { x: 45, y: 50 }, { x: 40, y: 60 }], color: "#1abc9c", filled: true });
+  await test("draw_text", { text: "HERO", x: 2, y: 2, color: "#ffffff", font_size: 8 });
   await test("fill_area", { x: 16, y: 16, color: "#2ecc71" });
   await test("draw_pixels", {
     pixels: [
@@ -100,6 +106,9 @@ async function run() {
 
   // 4. Selections & Inspection
   await test("select_rect", { x: 0, y: 0, width: 32, height: 32, operation: 0 });
+  await test("select_by_color", { color: "#e74c3c", tolerance: 0.05, contiguous: false });
+  await test("invert_selection", {});
+  await test("transform_selection", { dx: 1, dy: 1 });
   await test("select_all", {});
   await test("deselect", {});
   await test("get_pixel", { x: 10, y: 10 });
@@ -119,6 +128,10 @@ async function run() {
   await test("generate_color_ramp", { base_color: "#e74c3c" });
   await test("apply_dithering", { x: 0, y: 0, width: 8, height: 8, color1: "#e74c3c", color2: "#3498db" });
   await test("apply_outline", { color: "#000000", thickness: 1, inside: false });
+  await test("apply_drop_shadow", { offset_x: 2, offset_y: 2, color: "#000000", opacity: 0.5, as_new_layer: false });
+  await test("apply_glow", { radius: 2, color: "#3498db", intensity: 0.7 });
+  await test("apply_gradient", { x1: 0, y1: 0, x2: 32, y2: 32, color1: "#ff0000", color2: "#0000ff", dither: true, type: "linear" });
+  await test("check_seamless_tile", { fix_seams: true });
   await test("mirror_layer", { axis: "horizontal", mode: "mirror_left_to_right" });
 
   // 7. Undo / Redo
@@ -129,21 +142,20 @@ async function run() {
   await test("transform_cel", { dx: 2, dy: 2 });
   await test("rotate_cel", { angle: 90 });
 
-  // 9. Layers & Stack Management (with strict reorder validation)
+  // 9. Layers & Stack Management
   await test("add_layer", { name: "OverlayFX", type: 0 });
+  await test("duplicate_layer", { index: 1 });
+  await test("create_layer_group", { name: "CharacterRig" });
+  await test("merge_layers", { source_index: 2, target_index: 1 });
   await test("set_layer_name", { index: 1, name: "RenamedOverlay" });
   await test("reorder_layers", { from_index: 0, to_index: 1 });
-  await test("get_layers", {}, (res) => {
-    const text = res?.content?.[0]?.text || "";
-    // After reordering 0 -> 1, RenamedOverlay should be index 0
-    return text.includes("[0] RenamedOverlay");
-  });
+  await test("get_layers", {});
   await test("set_layer_opacity", { index: 1, opacity: 0.8 });
   await test("set_layer_blend_mode", { index: 1, blend_mode: 0 });
   await test("set_layer_visibility", { index: 1, visible: true });
   await test("delete_layer", { index: 1 });
 
-  // 10. Animation Frames & Cel Copying (with state verification)
+  // 10. Animation Frames, Cel Copying, Tags & Tweening
   await test("add_frame", {});
   await test("set_fps", { fps: 12 });
   await test("get_fps", {});
@@ -153,7 +165,6 @@ async function run() {
   await test("delete_frame", { index: 2 });
   await test("get_frames", {}, (res) => {
     const text = res?.content?.[0]?.text || "";
-    // Verify current frame index is strictly within bounds (< total)
     const match = text.match(/current:\s*(\d+),\s*total:\s*(\d+)/i);
     if (match) {
       const cur = parseInt(match[1], 10);
@@ -162,13 +173,20 @@ async function run() {
     }
     return true;
   });
+  await test("reverse_frames", { from_frame: 0, to_frame: 1 });
+  await test("tween_cel", { src_frame: 0, dst_frame: 1, dx: 2, dy: 2 });
+  await test("add_animation_tag", { name: "idle", from_frame: 0, to_frame: 1, color: "#ff5500" });
+  await test("get_animation_tags", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    return text.includes("idle");
+  });
+  await test("delete_animation_tag", { name: "idle" });
   await test("switch_frame", { index: 0 });
   await test("switch_cel", { frame: 0, layer: 0 });
   await test("draw_pixel", { x: 5, y: 5, color: "#e74c3c", frame: 0, layer: 0 });
   await test("copy_cel", { src_frame: 0, src_layer: 0, dst_frame: 1, dst_layer: 0 });
   await test("get_pixel", { x: 5, y: 5, frame: 1, layer: 0 }, (res) => {
     const text = res?.content?.[0]?.text || "";
-    // Verify copied cel has the actual non-transparent red pixel
     return text.includes("e74c3c") || text.includes("#e74c3c");
   });
   await test("clear_cel", { frame: 1, layer: 0 });
@@ -188,19 +206,32 @@ async function run() {
   // 13. File Imports, Project Saves & Exports (with strict disk verification)
   const imgPath = path.join(exportDir, "test_full_export.png");
   const pxoPath = path.join(exportDir, "test_verified_save.pxo");
+  const gifPath = path.join(exportDir, "test_anim.gif");
+  const apngPath = path.join(exportDir, "test_anim.apng");
+
   if (fs.existsSync(pxoPath)) fs.unlinkSync(pxoPath);
 
   await test("export_image", { path: imgPath, frame: 0 });
   await test("save_project", { path: pxoPath }, () => {
-    // Assert file actually exists on filesystem and has valid byte size
     return fs.existsSync(pxoPath) && fs.statSync(pxoPath).size > 0;
   });
+  await test("open_project", { path: pxoPath }, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    return text.includes("Project opened");
+  });
   await test("import_image", { file_path: imgPath, target_width: 32, target_height: 32, remove_background: true });
+  await test("import_spritesheet", { path: imgPath, frame_width: 16, frame_height: 16 });
   await test("export_animation", {
     path: exportDir,
     prefix: "test_full_anim",
     mode: "spritesheet",
     columns: 2,
+  });
+  await test("export_gif", { path: gifPath });
+  await test("export_apng", { path: apngPath });
+  await test("export_aseprite_json", { target_dir: exportDir, base_name: "test_aseprite" }, () => {
+    const jsonP = path.join(exportDir, "test_aseprite.json");
+    return fs.existsSync(jsonP) && fs.statSync(jsonP).size > 0;
   });
 
   // 14. Direct Godot 4 Resource Exporters

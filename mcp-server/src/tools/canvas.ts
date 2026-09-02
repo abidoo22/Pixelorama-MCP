@@ -284,4 +284,105 @@ export function registerCanvasTools(server: McpServer): void {
       return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
     }
   );
+
+  server.tool(
+    "open_project",
+    "Open an existing Pixelorama project file (.pxo) by its absolute path on disk.",
+    {
+      path: z.string().describe("Absolute file path to the .pxo project file"),
+    },
+    async ({ path }) => {
+      const result = await sendCommand("open_project", { path });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Project opened: "${result.data?.name}" (${result.data?.width}×${result.data?.height}, ${result.data?.layers} layers, ${result.data?.frames} frames) from ${path}`
+              : `❌ Failed to open project: ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "set_tile_mode",
+    "Configure Pixelorama's native live repeating viewport tile mode (renders 3×3 repeating tiles in real-time for seamless texture/terrain drafting).",
+    {
+      mode: z
+        .enum(["off", "x", "y", "both"])
+        .default("both")
+        .describe("Tile wrapping mode: 'off', 'x' (horizontal only), 'y' (vertical only), or 'both'"),
+    },
+    async ({ mode }) => {
+      const result = await sendCommand("set_tile_mode", { mode });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Viewport Tile Mode set to: "${mode}"`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "set_symmetry_guide",
+    "Enable and position Pixelorama's native horizontal and vertical symmetry guide axes for mirrored drawing.",
+    {
+      horizontal: z.boolean().default(false).describe("Enable horizontal symmetry plane"),
+      vertical: z.boolean().default(false).describe("Enable vertical symmetry plane"),
+      x_pos: coerceInt(0).optional().describe("X coordinate for vertical symmetry line (defaults to center)"),
+      y_pos: coerceInt(0).optional().describe("Y coordinate for horizontal symmetry line (defaults to center)"),
+    },
+    async ({ horizontal, vertical, x_pos, y_pos }) => {
+      const params: Record<string, unknown> = { horizontal, vertical };
+      if (x_pos !== undefined) params.x_pos = x_pos;
+      if (y_pos !== undefined) params.y_pos = y_pos;
+      const result = await sendCommand("set_symmetry_guide", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Symmetry Guides updated: Horizontal=${horizontal}, Vertical=${vertical} (Center: x=${result.data?.x_symmetry}, y=${result.data?.y_symmetry})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "set_onion_skinning",
+    "Configure animation onion skinning in the live editor to display ghosted past/future animation frames.",
+    {
+      enabled: z.boolean().default(true).describe("Toggle onion skinning overlay"),
+      past_frames: coerceInt(1, 10).default(1).describe("Number of past frames to show in ghost overlay"),
+      future_frames: coerceInt(0, 10).default(1).describe("Number of future frames to show in ghost overlay"),
+      blue_red_tint: z.boolean().default(true).describe("Use classic Blue (past) and Red (future) color tinting"),
+    },
+    async ({ enabled, past_frames, future_frames, blue_red_tint }) => {
+      const result = await sendCommand("set_onion_skinning", {
+        enabled,
+        past_frames,
+        future_frames,
+        blue_red_tint,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Onion Skinning ${enabled ? "Enabled" : "Disabled"}: Past=${past_frames} frames, Future=${future_frames} frames`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

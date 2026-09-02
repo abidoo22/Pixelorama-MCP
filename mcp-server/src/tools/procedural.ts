@@ -181,4 +181,151 @@ export function registerProceduralTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "apply_drop_shadow",
+    "Generate a cast drop shadow from the sprite's silhouette with customizable offsets, color, opacity, or create it as a separate layer.",
+    {
+      offset_x: coerceInt().default(1).describe("Horizontal shadow offset in pixels"),
+      offset_y: coerceInt().default(1).describe("Vertical shadow offset in pixels"),
+      color: z.string().default("#000000").describe("Shadow hex color"),
+      opacity: z.number().default(0.5).describe("Shadow opacity (0.0 to 1.0)"),
+      as_new_layer: coerceBool().default(false).describe("If true, generates the shadow onto a dedicated layer beneath the sprite"),
+    },
+    async ({ offset_x, offset_y, color, opacity, as_new_layer }) => {
+      const result = await sendCommand("apply_drop_shadow", {
+        offset_x,
+        offset_y,
+        color,
+        opacity,
+        as_new_layer,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Drop Shadow applied: ${result.data?.shadow_pixels} pixels (offset: [${offset_x}, ${offset_y}], opacity: ${opacity}, new layer: ${as_new_layer})`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "apply_glow",
+    "Generate a soft glowing halo / bloom around non-transparent pixels (ideal for magic weapons, neon lights, glowing eyes, or cyberpunk art).",
+    {
+      radius: coerceInt(1, 10).default(2).describe("Glow halo radius in pixels"),
+      color: z.string().default("#3498db").describe("Glow hex color"),
+      intensity: z.number().default(0.6).describe("Glow intensity (0.0 to 1.0)"),
+    },
+    async ({ radius, color, intensity }) => {
+      const result = await sendCommand("apply_glow", { radius, color, intensity });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "apply_gradient",
+    "Fill a region with a smooth linear or radial color gradient, with optional ordered dithering (Bayer 4x4 matrix).",
+    {
+      x1: coerceInt(0).default(0).describe("Top-left X of gradient area"),
+      y1: coerceInt(0).default(0).describe("Top-left Y of gradient area"),
+      x2: coerceInt(1).default(64).describe("Bottom-right X of gradient area"),
+      y2: coerceInt(1).default(64).describe("Bottom-right Y of gradient area"),
+      color1: z.string().default("#ffffff").describe("Start hex color"),
+      color2: z.string().default("#000000").describe("End hex color"),
+      dither: coerceBool().default(true).describe("Enable Bayer ordered dithering"),
+      type: z.enum(["linear", "radial"]).default("linear").describe("Gradient type: 'linear' or 'radial'"),
+    },
+    async ({ x1, y1, x2, y2, color1, color2, dither, type }) => {
+      const result = await sendCommand("apply_gradient", {
+        x1,
+        y1,
+        x2,
+        y2,
+        color1,
+        color2,
+        dither,
+        type,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ ${type.toUpperCase()} Gradient applied with ${dither ? "Bayer dithering" : "smooth blend"} from ${color1} to ${color2}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "check_seamless_tile",
+    "Validate and optionally fix border seams on tiles so that top/bottom and left/right edges wrap seamlessly.",
+    {
+      fix_seams: coerceBool().default(false).describe("If true, automatically blends/fixes border seams to make the tile 100% seamless"),
+    },
+    async ({ fix_seams }) => {
+      const result = await sendCommand("check_seamless_tile", { fix_seams });
+      if (result.success && result.data) {
+        const d = result.data;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: d.is_seamless
+                ? `✅ Tile is 100% SEAMLESS! (Horizontal errors: ${d.horizontal_seam_errors}, Vertical errors: ${d.vertical_seam_errors})`
+                : `⚠️ Seamless tile errors detected: ${d.horizontal_seam_errors} horizontal mismatches, ${d.vertical_seam_errors} vertical mismatches. Pass fix_seams: true to auto-correct.`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "draw_text",
+    "Render crisp pixel typography / bitmap font directly onto the canvas (essential for dialogue boxes, title screens, damage numbers, and HUDs).",
+    {
+      text: z.string().describe("Text string to draw"),
+      x: coerceInt().default(0).describe("Starting X position in pixels"),
+      y: coerceInt().default(0).describe("Starting Y position in pixels"),
+      color: z.string().default("#ffffff").describe("Font hex color"),
+      font_size: coerceInt(4, 32).default(8).describe("Font line height in pixels"),
+    },
+    async ({ text, x, y, color, font_size }) => {
+      const result = await sendCommand("draw_text", {
+        text,
+        x,
+        y,
+        color,
+        font_size,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Rendered "${text}" (${result.data?.chars_drawn} characters) at (${x}, ${y}) with color ${color}`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }

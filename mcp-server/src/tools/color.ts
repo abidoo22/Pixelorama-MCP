@@ -210,4 +210,68 @@ export function registerColorTools(server: McpServer): void {
       };
     }
   );
+
+  server.tool(
+    "get_palette_usage",
+    "Analyze the active canvas and return an exact histogram/frequency list of all unique colors used, total pixel counts, and percentages.",
+    {},
+    async () => {
+      const result = await sendCommand("get_palette_usage", {});
+      if (result.success && result.data) {
+        const colors = (result.data.colors as Array<{ color: string; count: number; percentage: number }>)
+          .slice(0, 32)
+          .map((c) => `  ${c.color}: ${c.count} px (${c.percentage}%)`)
+          .join("\n");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `🎨 Canvas Palette Usage (${result.data.unique_colors_count} unique colors, ${result.data.total_colored_pixels} total pixels):\n${colors}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "clean_isolated_pixels",
+    "Automatically scan the canvas and remove/blend orphan 1px noise (isolated rogue pixels with 0 matching neighbors) for clean retro pixel art.",
+    {},
+    async () => {
+      const result = await sendCommand("clean_isolated_pixels", {});
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Cleaned ${result.data?.isolated_pixels_cleaned} isolated noise pixels from active cel`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "remap_to_palette",
+    "Quantize and snap all canvas pixels to the closest matching Euclidean color in the specified palette array.",
+    {
+      palette_colors: z.array(z.string()).describe("Array of hex colors to quantize onto (e.g. ['#000000', '#ffffff', '#e74c3c'])"),
+    },
+    async ({ palette_colors }) => {
+      const result = await sendCommand("remap_to_palette", { palette_colors });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Remapped ${result.data?.remapped_pixels} pixels to ${result.data?.palette_size}-color palette`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
 }
