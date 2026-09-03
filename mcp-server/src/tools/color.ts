@@ -23,6 +23,17 @@ export function registerColorTools(server: McpServer): void {
         .describe("0 for foreground (left mouse button), 1 for background (right mouse button)"),
     },
     async ({ color, button }) => {
+      const hexRegex = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+      if (!hexRegex.test(color.trim())) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `❌ Invalid color hex format: "${color}". Expected valid hex color such as '#FF5733' or '#00FF00'`,
+            },
+          ],
+        };
+      }
       const result = await sendCommand("set_color", { color, button });
       return {
         content: [

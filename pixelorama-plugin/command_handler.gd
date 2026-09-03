@@ -389,6 +389,12 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 	if projects_arr.is_empty():
 		return {"success": false, "error": "No open canvases to close"}
 
+	if projects_arr.size() <= 1:
+		return {
+			"success": false,
+			"error": "Cannot close the only open canvas. Open or create another canvas before closing this one."
+		}
+
 	var cur_idx: int = int(global.current_project_index) if "current_project_index" in global else 0
 	var target_index: int = int(params.get("index", cur_idx))
 	if target_index < 0 or target_index >= projects_arr.size():
@@ -641,41 +647,34 @@ func _cmd_crop_to_content(_params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var min_x := 999999
-	var min_y := 999999
-	var max_x := -1
-	var max_y := -1
-	var w := int(project.size.x)
-	var h := int(project.size.y)
+	var orig_w := int(project.size.x)
+	var orig_h := int(project.size.y)
 
-	for f in project.frames:
-		for cel in f.cels:
-			if cel.get_class_name() == "PixelCel":
-				var img: Image = cel.get_image()
-				for y in range(h):
-					for x in range(w):
-						if img.get_pixel(x, y).a > 0.01:
-							min_x = mini(min_x, x)
-							min_y = mini(min_y, y)
-							max_x = maxi(max_x, x)
-							max_y = maxi(max_y, y)
+	var drawing_algos = _api.general.get_drawing_algos()
+	if not drawing_algos:
+		return {"success": false, "error": "DrawingAlgos not accessible"}
 
-	if max_x == -1:
+	# Calculate used_rect to verify content exists and return bounding box metadata
+	var used_rect := Rect2i()
+	for cel in project.get_all_pixel_cels():
+		if cel.get_class_name() == "PixelCel":
+			var cel_used: Rect2i = cel.get_image().get_used_rect()
+			if cel_used != Rect2i(0, 0, 0, 0):
+				if used_rect == Rect2i(0, 0, 0, 0):
+					used_rect = cel_used
+				else:
+					used_rect = used_rect.merge(cel_used)
+
+	if used_rect == Rect2i(0, 0, 0, 0):
 		return {"success": false, "error": "Canvas is completely empty"}
 
-	var new_w := max_x - min_x + 1
-	var new_h := max_y - min_y + 1
-	var crop_rect := Rect2i(min_x, min_y, new_w, new_h)
+	# Use Pixelorama's native crop_to_content which handles all cels, layer offsets,
+	# selections, symmetry axes, and undo/redo without any clipping!
+	drawing_algos.crop_to_content()
 
-	for f in project.frames:
-		for cel in f.cels:
-			if cel.get_class_name() == "PixelCel":
-				var old_img: Image = cel.get_image()
-				var cropped_img := Image.create(new_w, new_h, false, Image.FORMAT_RGBA8)
-				cropped_img.blit_rect(old_img, crop_rect, Vector2i.ZERO)
-				cel.set_image(cropped_img)
+	var new_w := int(project.size.x)
+	var new_h := int(project.size.y)
 
-	project.size = Vector2i(new_w, new_h)
 	var canvas = _api.general.get_canvas()
 	if canvas:
 		canvas.queue_redraw()
@@ -683,7 +682,14 @@ func _cmd_crop_to_content(_params: Dictionary) -> Dictionary:
 		if cam and cam.has_method("fit_to_frame"):
 			cam.fit_to_frame()
 
-	return {"success": true, "data": {"original_size": [w, h], "new_size": [new_w, new_h], "crop_rect": [min_x, min_y, new_w, new_h]}}
+	return {
+		"success": true,
+		"data": {
+			"original_size": [orig_w, orig_h],
+			"new_size": [new_w, new_h],
+			"crop_rect": [used_rect.position.x, used_rect.position.y, used_rect.size.x, used_rect.size.y]
+		}
+	}
 
 
 func _cmd_scale_canvas(params: Dictionary) -> Dictionary:
@@ -1458,7 +1464,14 @@ func _cmd_get_region(params: Dictionary) -> Dictionary:
 # ─────────────────────────────────────────────
 
 func _cmd_set_color(params: Dictionary) -> Dictionary:
-	var color := _parse_color(params)
+	var color_str: String = str(params.get("color", "")).strip_edges()
+	if color_str.is_empty() or not Color.html_is_valid(color_str):
+		return {
+			"success": false,
+			"error": "Invalid color hex format: '%s'. Expected valid hex color like '#FF5733' or '#00FF00'" % color_str
+		}
+
+	var color := Color.html(color_str)
 	var button: int = params.get("button", 0)  # 0 = left (foreground), 1 = right (background)
 
 	var tools_autoload = _api.tools.autoload()
@@ -2261,11 +2274,108 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var first_img = _blend_frame_layers(project, 0)
-	var err = first_img.save_png(path)
-	if err == OK:
-		return {"success": true, "data": {"path": path, "frames": project.frames.size(), "format": "apng"}}
-	return {"success": false, "error": "Failed to export APNG to %s" % path}
+	var dir_name := path.get_base_dir()
+	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
+		DirAccess.make_dir_recursive_absolute(dir_name)
+
+	var frame_count: int = project.frames.size()
+	var apng_stream_script = load("res://addons/aimg_io/apng_stream.gd")
+	if not apng_stream_script:
+		var first_img = _blend_frame_layers(project, 0)
+		var err = first_img.save_png(path)
+		if err == OK:
+			return {"success": true, "data": {"path": path, "frames": 1, "format": "png", "warning": "APNG stream writer not available, saved standard PNG"}}
+		return {"success": false, "error": "Failed to export APNG to %s" % path}
+
+	var first_frame_img := _blend_frame_layers(project, 0)
+	var w := first_frame_img.get_width()
+	var h := first_frame_img.get_height()
+	var fps: float = maxf(1.0, float(project.fps))
+
+	var stream = apng_stream_script.new()
+	stream.write_magic()
+
+	# 1. IHDR
+	var chunk = stream.start_chunk()
+	chunk.put_32(w)
+	chunk.put_32(h)
+	chunk.put_32(0x08060000) # bit depth 8, color type 6 (RGBA)
+	chunk.put_8(0)
+	stream.write_chunk("IHDR", chunk.data_array)
+
+	# 2. acTL (animation control)
+	chunk = stream.start_chunk()
+	chunk.put_32(frame_count)
+	chunk.put_32(0) # 0 = infinite loop
+	stream.write_chunk("acTL", chunk.data_array)
+
+	var sequence := 0
+	for i in range(frame_count):
+		var img := _blend_frame_layers(project, i)
+		img.convert(Image.FORMAT_RGBA8)
+
+		# 3. fcTL (frame control)
+		chunk = stream.start_chunk()
+		chunk.put_32(sequence)
+		sequence += 1
+		chunk.put_32(w)
+		chunk.put_32(h)
+		chunk.put_32(0) # x offset
+		chunk.put_32(0) # y offset
+
+		# Frame delay calculation
+		var duration: float = maxf(0.01, project.frames[i].duration)
+		var den: int = clampi(int(round(fps)), 1, 32767)
+		var num: float = duration * float(den)
+		while num < 16384 and den < 16384:
+			num *= 2
+			den *= 2
+		chunk.put_16(int(round(num)))
+		chunk.put_16(den)
+
+		chunk.put_8(0) # dispose_op: 0 (none)
+		chunk.put_8(0) # blend_op: 0 (source)
+		stream.write_chunk("fcTL", chunk.data_array)
+
+		# 4. IDAT (frame 0) or fdAT (frames > 0)
+		chunk = stream.start_chunk()
+		if i != 0:
+			chunk.put_32(sequence)
+			sequence += 1
+
+		var raw_data: PackedByteArray = img.get_data()
+		var scanlines := StreamPeerBuffer.new()
+		for y in range(h):
+			scanlines.put_8(0) # filter type 0 (None)
+			scanlines.put_data(raw_data.slice(y * w * 4, (y + 1) * w * 4))
+
+		var compressed: PackedByteArray = scanlines.data_array.compress(FileAccess.COMPRESSION_DEFLATE)
+		chunk.put_data(compressed)
+
+		if i == 0:
+			stream.write_chunk("IDAT", chunk.data_array)
+		else:
+			stream.write_chunk("fdAT", chunk.data_array)
+
+	# 5. IEND
+	stream.write_chunk("IEND", PackedByteArray())
+
+	var file_bytes: PackedByteArray = stream.finish()
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return {"success": false, "error": "Failed to write APNG to file: %s" % path}
+	file.store_buffer(file_bytes)
+	file.close()
+
+	return {
+		"success": true,
+		"data": {
+			"path": path,
+			"frames": frame_count,
+			"format": "apng",
+			"size_bytes": file_bytes.size()
+		}
+	}
 
 
 func _cmd_export_aseprite_json(params: Dictionary) -> Dictionary:
@@ -2610,7 +2720,7 @@ func _cmd_transform_selection(params: Dictionary) -> Dictionary:
 
 	project.selection_map.copy_from(new_selection_map)
 	project.selection_map_changed()
-	_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
+	_commit_image_change(img, "Transform Selection", project.current_frame, project.current_layer)
 
 	return {"success": true, "data": {"dx": dx, "dy": dy, "transformed_pixels": selected_pixels.size()}}
 
@@ -2858,11 +2968,7 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 
 				img.set_pixel(x, y, final_col)
 
-	_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
-	var canvas = _api.general.get_canvas()
-	if canvas:
-		canvas.set("update_all_layers", true)
-		canvas.queue_redraw()
+	_commit_image_change(img, "Apply Gradient", project.current_frame, project.current_layer)
 
 	return {"success": true, "data": {"type": grad_type, "dither": dither, "bounds": [rx1, ry1, rx2, ry2]}}
 
@@ -2903,11 +3009,7 @@ func _cmd_check_seamless_tile(params: Dictionary) -> Dictionary:
 				img.set_pixel(x, h - 1, avg)
 
 	if fix_seams:
-		_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
-		var canvas = _api.general.get_canvas()
-		if canvas:
-			canvas.set("update_all_layers", true)
-			canvas.queue_redraw()
+		_commit_image_change(img, "Fix Seamless Tile", project.current_frame, project.current_layer)
 
 	var is_seamless = (x_mismatches == 0 and y_mismatches == 0)
 	return {
@@ -2965,11 +3067,7 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 		cur_x += glyph_matrix[0].size() + 1
 		chars_drawn += 1
 
-	_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
-	var canvas = _api.general.get_canvas()
-	if canvas:
-		canvas.set("update_all_layers", true)
-		canvas.queue_redraw()
+	_commit_image_change(img, "Draw Text", project.current_frame, project.current_layer)
 
 	return {"success": true, "data": {"text": text, "chars_drawn": chars_drawn, "pos": [start_x, start_y]}}
 
@@ -3036,11 +3134,7 @@ func _cmd_clean_isolated_pixels(_params: Dictionary) -> Dictionary:
 					cleaned += 1
 
 	if cleaned > 0:
-		_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
-		var canvas = _api.general.get_canvas()
-		if canvas:
-			canvas.set("update_all_layers", true)
-			canvas.queue_redraw()
+		_commit_image_change(img, "Clean Isolated Pixels", project.current_frame, project.current_layer)
 
 	return {"success": true, "data": {"isolated_pixels_cleaned": cleaned}}
 
@@ -3082,11 +3176,7 @@ func _cmd_remap_to_palette(params: Dictionary) -> Dictionary:
 				img.set_pixel(x, y, best_col)
 				remapped_count += 1
 
-	_api.project.set_pixelcel_image(img, project.current_frame, project.current_layer)
-	var canvas = _api.general.get_canvas()
-	if canvas:
-		canvas.set("update_all_layers", true)
-		canvas.queue_redraw()
+	_commit_image_change(img, "Remap to Palette", project.current_frame, project.current_layer)
 
 	return {"success": true, "data": {"remapped_pixels": remapped_count, "palette_size": colors.size()}}
 

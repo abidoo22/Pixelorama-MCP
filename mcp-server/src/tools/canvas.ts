@@ -138,7 +138,7 @@ export function registerCanvasTools(server: McpServer): void {
 
   server.tool(
     "close_canvas",
-    "Close an open canvas/project tab in Pixelorama by its index.",
+    "Close an open canvas/project tab in Pixelorama by its index. Note: Pixelorama requires at least one canvas to remain open — attempting to close the only open canvas is blocked.",
     {
       index: coerceInt(0).optional().describe("Canvas index to close (defaults to currently active canvas)"),
     },

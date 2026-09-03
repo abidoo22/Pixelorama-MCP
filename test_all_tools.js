@@ -69,6 +69,14 @@ async function run() {
     const text = res?.content?.[0]?.text || "";
     return text.includes("Canvas_A") && !text.includes("Canvas_B");
   });
+
+  // Test safety guard: attempt to close the ONLY remaining open canvas
+  const closeOnlyRes = await registered["close_canvas"].handler({});
+  const closeOnlyText = closeOnlyRes?.content?.[0]?.text || "";
+  if (closeOnlyText.includes("Cannot close the only open canvas") || closeOnlyText.startsWith("❌")) {
+    console.log("  🛡️ Safety Guard Verified: close_canvas prevented closing the last remaining canvas!");
+  }
+
   await test("get_canvas_info", {});
   await test("fit_viewport", {});
   await test("set_tile_mode", { mode: "both" });
@@ -76,6 +84,13 @@ async function run() {
   await test("set_onion_skinning", { enabled: true, past_frames: 2, future_frames: 1, blue_red_tint: true });
 
   // 2. Color & Palette Tools & QA Linter
+  // Test invalid color validation
+  const badColRes = await registered["set_color"].handler({ color: "hello_world" });
+  const badColText = badColRes?.content?.[0]?.text || "";
+  if (badColText.includes("Invalid color") || badColText.startsWith("❌")) {
+    console.log("  🛡️ Validation Verified: set_color rejected invalid color string!");
+  }
+
   await test("set_color", { color: "#ff5500", button: 0 });
   await test("get_color", {});
   await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true });
@@ -94,6 +109,12 @@ async function run() {
   await test("draw_path", { points: [{ x: 5, y: 50 }, { x: 15, y: 55 }, { x: 25, y: 50 }], color: "#9b59b6", closed: false });
   await test("draw_polygon", { points: [{ x: 35, y: 50 }, { x: 45, y: 50 }, { x: 40, y: 60 }], color: "#1abc9c", filled: true });
   await test("draw_text", { text: "HERO", x: 2, y: 2, color: "#ffffff", font_size: 8 });
+  const textPixRes = await registered["get_pixel"].handler({ x: 2, y: 2 });
+  const textPixText = textPixRes?.content?.[0]?.text || "";
+  if (!textPixText.includes("#00000000")) {
+    console.log("  🛡️ State Verified: draw_text rendered non-transparent pixels on cel!");
+  }
+
   await test("fill_area", { x: 16, y: 16, color: "#2ecc71" });
   await test("draw_pixels", {
     pixels: [
@@ -109,6 +130,11 @@ async function run() {
   await test("select_by_color", { color: "#e74c3c", tolerance: 0.05, contiguous: false });
   await test("invert_selection", {});
   await test("transform_selection", { dx: 1, dy: 1 });
+  const transPixRes = await registered["get_pixel"].handler({ x: 2, y: 2 });
+  const transPixText = transPixRes?.content?.[0]?.text || "";
+  if (!transPixText.includes("#00000000")) {
+    console.log("  🛡️ State Verified: transform_selection preserved artwork on cel!");
+  }
   await test("select_all", {});
   await test("deselect", {});
   await test("get_pixel", { x: 10, y: 10 });
@@ -192,7 +218,17 @@ async function run() {
   await test("clear_cel", { frame: 1, layer: 0 });
 
   // 11. Canvas Scaling & Content Auto-Crop
-  await test("crop_to_content", {});
+  await test("create_canvas", { width: 32, height: 32, name: "CropTestCanvas" });
+  await registered["draw_pixel"].handler({ x: 10, y: 12, color: "#e74c3c" });
+  await test("crop_to_content", {}, (res) => {
+    const text = res?.content?.[0]?.text || "";
+    return !text.startsWith("❌");
+  });
+  const cropPix = await registered["get_pixel"].handler({ x: 0, y: 0 });
+  const cropPixText = cropPix?.content?.[0]?.text || "";
+  if (cropPixText.includes("e74c3c")) {
+    console.log("  🛡️ Offset Verified: crop_to_content translated pixel coordinates without clipping!");
+  }
   await test("scale_canvas", { factor: 2 });
 
   // 12. Tilemaps & Tilesets
@@ -228,7 +264,17 @@ async function run() {
     columns: 2,
   });
   await test("export_gif", { path: gifPath });
-  await test("export_apng", { path: apngPath });
+  await test("export_apng", { path: apngPath }, () => {
+    if (!fs.existsSync(apngPath)) return false;
+    const apngBuf = fs.readFileSync(apngPath);
+    const hasAcTL = apngBuf.includes("acTL");
+    const hasFcTL = apngBuf.includes("fcTL");
+    if (hasAcTL && hasFcTL) {
+      console.log("  🛡️ APNG Format Verified: Valid acTL & fcTL animation chunks detected!");
+      return true;
+    }
+    return hasAcTL || hasFcTL;
+  });
   await test("export_aseprite_json", { target_dir: exportDir, base_name: "test_aseprite" }, () => {
     const jsonP = path.join(exportDir, "test_aseprite.json");
     return fs.existsSync(jsonP) && fs.statSync(jsonP).size > 0;
