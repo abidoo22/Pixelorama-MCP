@@ -163,20 +163,23 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "create_palette",
-    "Create a new empty palette.",
+    "Create a new palette, with optional batch colors array to populate swatches in a single tool call.",
     {
       name: z.string().describe("Name of the new palette"),
       width: coerceInt(1).default(8).describe("Palette width"),
       height: coerceInt(1).default(8).describe("Palette height"),
       is_global: coerceBool().default(true).describe("If true, saves globally. If false, saves to project."),
+      colors: z.array(z.string()).optional().describe("Optional array of hex color strings to populate immediately in batch (e.g. ['#1a1a2e', '#16213e', '#0f3460', '#e94560'])"),
     },
-    async ({ name, width, height, is_global }) => {
-      const result = await sendCommand("create_palette", { name, width, height, is_global });
+    async ({ name, width, height, is_global, colors }) => {
+      const result = await sendCommand("create_palette", { name, width, height, is_global, colors });
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Palette "${name}" created (${width}x${height})` : `❌ ${result.error}`,
+            text: result.success
+              ? `✅ Palette "${name}" created (${width}x${height})${result.data?.colors_added ? ` with ${result.data.colors_added} colors` : ""}`
+              : `❌ ${result.error}`,
           },
         ],
       };
@@ -185,17 +188,20 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "add_palette_color",
-    "Add a color to the currently active palette.",
+    "Add one or multiple colors to the currently active palette in batch.",
     {
-      color: z.string().describe("Color hex string"),
+      color: z.string().optional().describe("Single color hex string to add (e.g. '#ff0000')"),
+      colors: z.array(z.string()).optional().describe("Optional array of hex color strings to add in bulk (e.g. ['#ff0000', '#00ff00', '#0000ff'])"),
     },
-    async ({ color }) => {
-      const result = await sendCommand("add_palette_color", { color });
+    async ({ color, colors }) => {
+      const result = await sendCommand("add_palette_color", { color, colors });
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Color ${color} added to palette` : `❌ ${result.error}`,
+            text: result.success
+              ? `✅ Added ${result.data?.colors_added ?? 1} color(s) to palette "${result.data?.palette_name}"`
+              : `❌ ${result.error}`,
           },
         ],
       };
@@ -224,10 +230,14 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "get_palette_usage",
-    "Analyze the active canvas and return an exact histogram/frequency list of all unique colors used, total pixel counts, and percentages.",
-    {},
-    async () => {
-      const result = await sendCommand("get_palette_usage", {});
+    "Analyze the palette usage of the canvas (or a specific layer) and return an exact histogram of all unique colors used, total pixel counts, and percentages.",
+    {
+      all_layers: coerceBool().default(true).describe("If true, analyzes the full composite of all visible layers. If false, analyzes only the specified or active layer."),
+      layer: coerceInt(0).optional().describe("Target layer index to analyze when all_layers is false (defaults to active layer)"),
+      frame: coerceInt(0).optional().describe("Target frame index to analyze (defaults to active frame)"),
+    },
+    async ({ all_layers, layer, frame }) => {
+      const result = await sendCommand("get_palette_usage", { all_layers, layer, frame });
       if (result.success && result.data) {
         const colors = (result.data.colors as Array<{ color: string; count: number; percentage: number }>)
           .slice(0, 32)
@@ -237,7 +247,7 @@ export function registerColorTools(server: McpServer): void {
           content: [
             {
               type: "text" as const,
-              text: `🎨 Canvas Palette Usage (${result.data.unique_colors_count} unique colors, ${result.data.total_colored_pixels} total pixels):\n${colors}`,
+              text: `🎨 Palette Usage [${result.data.all_layers ? "Full Canvas Composite" : `Layer ${layer ?? "active"}`}] (${result.data.unique_colors_count} unique colors, ${result.data.total_colored_pixels} colored pixels):\n${colors}`,
             },
           ],
         };

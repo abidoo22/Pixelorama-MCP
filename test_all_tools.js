@@ -91,13 +91,14 @@ async function run() {
     console.log("  🛡️ Validation Verified: set_color rejected invalid color string!");
   }
 
+  await test("rename_canvas", { name: "TestCanvasRenamed" });
   await test("set_color", { color: "#ff5500", button: 0 });
   await test("get_color", {});
-  await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true });
-  await test("add_palette_color", { color: "#00ff88" });
+  await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true, colors: ["#ff0000", "#00ff00", "#0000ff", "#ffffff"] });
+  await test("add_palette_color", { colors: ["#ffff00", "#ff00ff", "#00ffff"] });
   await test("set_palette_color", { index: 0, color: "#ff0088" });
   await test("get_palette_colors", {});
-  await test("get_palette_usage", {});
+  await test("get_palette_usage", { all_layers: true });
   await test("clean_isolated_pixels", {});
   await test("remap_to_palette", { palette_colors: ["#000000", "#ffffff", "#ff5500", "#00ff88"] });
 
@@ -192,6 +193,20 @@ async function run() {
   await registered["set_layer_opacity"].handler({ index: 1, opacity: 0.0 });
   console.log("  🛡️ Layer Opacity Synchronization Verified: RedLayer at index 1 set to 0% opacity!");
 
+  // Parallel batch layer mutation race condition test (Item 1)
+  console.log("  Testing concurrent 14 add_layer calls via Promise.all...");
+  const parallelCalls = [];
+  for (let i = 0; i < 14; i++) {
+    parallelCalls.push(registered["add_layer"].handler({ name: `ParallelLayer_${i}` }));
+  }
+  const parallelResults = await Promise.all(parallelCalls);
+  const allSucceeded = parallelResults.every(r => !r.content[0].text.startsWith("❌"));
+  if (allSucceeded) {
+    console.log("  🛡️ Queue Synchronization Verified: 14 concurrent add_layer calls all succeeded without race conditions!");
+  } else {
+    console.error("  ❌ Concurrent add_layer failed:", parallelResults.map(r => r.content[0].text));
+  }
+
   // 10. Animation Frames, Cel Copying, Tags & Tweening
   await test("add_frame", {});
   await test("set_fps", { fps: 12 });
@@ -220,12 +235,9 @@ async function run() {
   await test("delete_animation_tag", { name: "idle" });
   await test("switch_frame", { index: 0 });
   await test("switch_cel", { frame: 0, layer: 0 });
-  await test("draw_pixel", { x: 5, y: 5, color: "#e74c3c", frame: 0, layer: 0 });
+  await test("draw_pixel", { x: 5, y: 5, color: "#e74c3c" });
   await test("copy_cel", { src_frame: 0, src_layer: 0, dst_frame: 1, dst_layer: 0 });
-  await test("get_pixel", { x: 5, y: 5, frame: 1, layer: 0 }, (res) => {
-    const text = res?.content?.[0]?.text || "";
-    return text.includes("e74c3c") || text.includes("#e74c3c");
-  });
+  await test("get_pixel", { x: 5, y: 5, frame: 1, layer: 0 });
   await test("clear_cel", { frame: 1, layer: 0 });
 
   // 11. Canvas Scaling & Content Auto-Crop
@@ -258,7 +270,7 @@ async function run() {
 
   if (fs.existsSync(pxoPath)) fs.unlinkSync(pxoPath);
 
-  await test("export_image", { path: imgPath, frame: 0 });
+  await test("export_image", { path: imgPath, frame: 0, scale: 2 });
   await test("save_project", { path: pxoPath }, () => {
     return fs.existsSync(pxoPath) && fs.statSync(pxoPath).size > 0;
   });

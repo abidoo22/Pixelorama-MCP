@@ -14,12 +14,35 @@ export interface BridgeResponse {
   error?: string;
 }
 
+// FIFO queue to serialize commands and prevent race conditions when LLMs fire parallel tool calls
+let commandQueue: Promise<unknown> = Promise.resolve();
+
 /**
  * Send a command to the Pixelorama bridge plugin.
+ * Serialized in strict order to avoid concurrent mutation races.
  */
 export async function sendCommand(
   tool: string,
   params: Record<string, unknown> = {}
+): Promise<BridgeResponse> {
+  return new Promise<BridgeResponse>((resolve) => {
+    commandQueue = commandQueue
+      .then(async () => {
+        const res = await _executeHttpCommand(tool, params);
+        resolve(res);
+      })
+      .catch((err) => {
+        resolve({
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  });
+}
+
+async function _executeHttpCommand(
+  tool: string,
+  params: Record<string, unknown>
 ): Promise<BridgeResponse> {
   const body = JSON.stringify({ tool, params });
 

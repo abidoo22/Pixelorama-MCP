@@ -160,6 +160,30 @@ export function registerCanvasTools(server: McpServer): void {
   );
 
   server.tool(
+    "rename_canvas",
+    "Rename the active canvas/project tab or a canvas by index.",
+    {
+      name: z.string().min(1).describe("New name for the canvas (e.g. 'Character_Sheet', 'Dungeon_Tiles')"),
+      index: coerceInt(0).optional().describe("Canvas index to rename (defaults to currently active canvas)"),
+    },
+    async ({ name, index }) => {
+      const params: Record<string, unknown> = { name };
+      if (index !== undefined) params.index = index;
+      const result = await sendCommand("rename_canvas", params);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `✅ Canvas [${result.data?.index}] renamed from "${result.data?.old_name}" to "${result.data?.name}"`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "save_project",
     "Save the active project to Pixelorama's native .pxo format (preserves all layers, animation frames, palettes, and cels). Provide 'path' to save a new project or specify a target file path.",
     {
@@ -184,21 +208,24 @@ export function registerCanvasTools(server: McpServer): void {
 
   server.tool(
     "export_image",
-    "Export the current canvas as a PNG image to the specified file path.",
+    "Export the current canvas as a PNG image to the specified file path, with optional non-destructive nearest-neighbor scaling.",
     {
       path: z.string().describe("Absolute file path to save the PNG (e.g. '/home/user/sprite.png')"),
       frame: coerceInt(0)
         .default(0)
         .describe("Frame index to export (0-based)"),
+      scale: coerceInt(1, 32)
+        .default(1)
+        .describe("Non-destructive upscale multiplier (e.g. 1 for native, 2 for 2x, 4 for 4x, 8 for 8x crisp pixel scaling)"),
     },
-    async ({ path, frame }) => {
-      const result = await sendCommand("export_image", { path, frame });
+    async ({ path, frame, scale }) => {
+      const result = await sendCommand("export_image", { path, frame, scale });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Image exported to: ${path}`
+              ? `✅ Image exported to: ${path}${result.data?.scale && Number(result.data.scale) > 1 ? ` (${result.data.scale}x scale: ${result.data.width}×${result.data.height}px)` : ""}`
               : `❌ ${result.error}`,
           },
         ],

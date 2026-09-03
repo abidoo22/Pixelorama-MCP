@@ -14,10 +14,15 @@ export function registerDrawingTools(server: McpServer): void {
   // ── undo ────────────────────────────────────────────────────────────
   server.tool(
     "undo",
-    "Undo the last drawing, layer, or cel modification in Pixelorama.",
+    "Undo the last drawing, layer, or cel modification in Pixelorama, returning the action name, affected layer, and remaining history.",
     {},
     async () => {
       const result = await sendCommand("undo", {});
+      if (result.success && result.data) {
+        const d = result.data;
+        const info = `↩️ ${d.message ?? "Undone action"} [action: "${d.action}", layer: ${d.layer_index} ("${d.layer_name}"), frame: ${d.frame}] (history: ${d.has_undo ? "more undo available" : "start of history"})`;
+        return { content: [{ type: "text" as const, text: info }] };
+      }
       return {
         content: [
           {
@@ -34,10 +39,15 @@ export function registerDrawingTools(server: McpServer): void {
   // ── redo ────────────────────────────────────────────────────────────
   server.tool(
     "redo",
-    "Redo the previously undone action in Pixelorama.",
+    "Redo the previously undone action in Pixelorama, returning the restored action, affected layer, and remaining history.",
     {},
     async () => {
       const result = await sendCommand("redo", {});
+      if (result.success && result.data) {
+        const d = result.data;
+        const info = `↪️ ${d.message ?? "Redone action"} [action: "${d.action}", layer: ${d.layer_index} ("${d.layer_name}"), frame: ${d.frame}] (history: ${d.has_redo ? "more redo available" : "latest action"})`;
+        return { content: [{ type: "text" as const, text: info }] };
+      }
       return {
         content: [
           {

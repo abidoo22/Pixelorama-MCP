@@ -29,6 +29,7 @@ func _register_tools() -> void:
 	_tool_registry["list_canvases"] = Callable(self, "_cmd_list_canvases")
 	_tool_registry["switch_canvas"] = Callable(self, "_cmd_switch_canvas")
 	_tool_registry["close_canvas"] = Callable(self, "_cmd_close_canvas")
+	_tool_registry["rename_canvas"] = Callable(self, "_cmd_rename_canvas")
 	_tool_registry["save_project"] = Callable(self, "_cmd_save_project")
 	_tool_registry["export_image"] = Callable(self, "_cmd_export_image")
 	_tool_registry["export_gif"] = Callable(self, "_cmd_export_gif")
@@ -442,6 +443,39 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 	}
 
 
+func _cmd_rename_canvas(params: Dictionary) -> Dictionary:
+	var global = _api.general.get_global()
+	if global == null:
+		return {"success": false, "error": "Global singleton not found"}
+
+	var name: String = str(params.get("name", "")).strip_edges()
+	if name.is_empty():
+		return {"success": false, "error": "Canvas name cannot be empty"}
+
+	var projects_arr = global.projects if "projects" in global else []
+	if projects_arr.is_empty():
+		return {"success": false, "error": "No open canvases"}
+
+	var cur_idx: int = int(global.current_project_index) if "current_project_index" in global else 0
+	var target_index: int = int(params.get("index", cur_idx))
+	if target_index < 0 or target_index >= projects_arr.size():
+		return {"success": false, "error": "Canvas index %d out of bounds (0..%d)" % [target_index, projects_arr.size() - 1]}
+
+	var proj = projects_arr[target_index]
+	var old_name: String = proj.name
+	proj.name = name
+
+	return {
+		"success": true,
+		"data": {
+			"index": target_index,
+			"old_name": old_name,
+			"name": name,
+			"message": "Renamed canvas [%d] from '%s' to '%s'" % [target_index, old_name, name]
+		}
+	}
+
+
 func _cmd_get_canvas_snapshot(params: Dictionary) -> Dictionary:
 	## Returns pixel data for a region of the canvas as a compact text map.
 	## Useful for AI to "see" what's currently drawn and make decisions.
@@ -583,15 +617,29 @@ func _cmd_export_image(params: Dictionary) -> Dictionary:
 	if frame_idx >= project.frames.size():
 		return {"success": false, "error": "Frame index %d out of range (0-%d)" % [frame_idx, project.frames.size() - 1]}
 
+	var scale_factor: int = int(params.get("scale", 1))
+	scale_factor = clampi(scale_factor, 1, 32)
+
 	var dir_name := path.get_base_dir()
 	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
 		DirAccess.make_dir_recursive_absolute(dir_name)
 
 	var img := _composite_frame_layers(project, frame_idx)
+	if scale_factor > 1:
+		img.resize(img.get_width() * scale_factor, img.get_height() * scale_factor, Image.INTERPOLATE_NEAREST)
 
 	var err := img.save_png(path)
 	if err == OK:
-		return {"success": true, "data": {"path": path, "format": "png"}}
+		return {
+			"success": true,
+			"data": {
+				"path": path,
+				"format": "png",
+				"scale": scale_factor,
+				"width": img.get_width(),
+				"height": img.get_height()
+			}
+		}
 	return {"success": false, "error": "Failed to save image: %s" % error_string(err)}
 
 
@@ -744,6 +792,7 @@ func _get_undo_redo() -> Object:
 
 
 func _cmd_undo(_params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
 	var ur = _get_undo_redo()
 	if ur != null:
 		if ur.has_undo():
@@ -751,22 +800,72 @@ func _cmd_undo(_params: Dictionary) -> Dictionary:
 			ur.undo()
 			var canvas = _api.general.get_canvas()
 			if canvas:
+				if "project_changed" in canvas:
+					canvas.project_changed = true
+				canvas.set("update_all_layers", true)
 				canvas.queue_redraw()
-			return {"success": true, "data": {"message": "Undone: %s" % action_name, "action": action_name}}
+
+			var layer_name := ""
+			var layer_idx := -1
+			var frame_idx := -1
+			if project:
+				layer_idx = project.current_layer
+				frame_idx = project.current_frame
+				if layer_idx >= 0 and layer_idx < project.layers.size():
+					layer_name = project.layers[layer_idx].name
+
+			return {
+				"success": true,
+				"data": {
+					"message": "Undone: %s" % action_name,
+					"action": action_name,
+					"layer_index": layer_idx,
+					"layer_name": layer_name,
+					"frame": frame_idx,
+					"has_undo": ur.has_undo(),
+					"has_redo": ur.has_redo()
+				}
+			}
 		else:
 			return {"success": false, "error": "Nothing to undo"}
 	return {"success": false, "error": "UndoRedo system not available"}
 
 
 func _cmd_redo(_params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
 	var ur = _get_undo_redo()
 	if ur != null:
 		if ur.has_redo():
+			var action_name: String = ur.get_current_action_name()
 			ur.redo()
 			var canvas = _api.general.get_canvas()
 			if canvas:
+				if "project_changed" in canvas:
+					canvas.project_changed = true
+				canvas.set("update_all_layers", true)
 				canvas.queue_redraw()
-			return {"success": true, "data": {"message": "Redone action"}}
+
+			var layer_name := ""
+			var layer_idx := -1
+			var frame_idx := -1
+			if project:
+				layer_idx = project.current_layer
+				frame_idx = project.current_frame
+				if layer_idx >= 0 and layer_idx < project.layers.size():
+					layer_name = project.layers[layer_idx].name
+
+			return {
+				"success": true,
+				"data": {
+					"message": "Redone: %s" % action_name,
+					"action": action_name,
+					"layer_index": layer_idx,
+					"layer_name": layer_name,
+					"frame": frame_idx,
+					"has_undo": ur.has_undo(),
+					"has_redo": ur.has_redo()
+				}
+			}
 		else:
 			return {"success": false, "error": "Nothing to redo"}
 	return {"success": false, "error": "UndoRedo system not available"}
@@ -2127,12 +2226,28 @@ func _cmd_get_palette_colors(_params: Dictionary) -> Dictionary:
 func _cmd_create_palette(params: Dictionary) -> Dictionary:
 	var palettes_autoload = _api.palette.autoload()
 	var name: String = params.get("name", "New Palette")
-	var width: int = params.get("width", 8)
-	var height: int = params.get("height", 8)
-	var is_global: bool = params.get("is_global", true)
+	var width: int = int(params.get("width", 8))
+	var height: int = int(params.get("height", 8))
+	var is_global: bool = bool(params.get("is_global", true))
+
+	var colors_arr: Array = params.get("colors", [])
+	if colors_arr.size() > (width * height):
+		width = mini(32, maxi(8, int(ceil(sqrt(colors_arr.size())))))
+		height = int(ceil(float(colors_arr.size()) / float(width)))
 
 	palettes_autoload.create_new_palette(0, name, "", width, height, false, 0, is_global)
-	return {"success": true, "data": {"name": name, "width": width, "height": height, "is_global": is_global}}
+	var current_palette = palettes_autoload.current_palette
+
+	var added := 0
+	if current_palette and colors_arr.size() > 0:
+		for c_val in colors_arr:
+			if c_val is String and Color.html_is_valid(c_val):
+				if not current_palette.is_full():
+					current_palette.add_color(Color.html(c_val))
+					added += 1
+		palettes_autoload.save_palette()
+
+	return {"success": true, "data": {"name": name, "width": width, "height": height, "is_global": is_global, "colors_added": added}}
 
 
 func _cmd_add_palette_color(params: Dictionary) -> Dictionary:
@@ -2141,13 +2256,23 @@ func _cmd_add_palette_color(params: Dictionary) -> Dictionary:
 	if current_palette == null:
 		return {"success": false, "error": "No active palette"}
 
-	var color := _parse_color(params)
-	if current_palette.is_full():
-		return {"success": false, "error": "Palette is full"}
+	var colors_arr: Array = params.get("colors", [])
+	var single_color = params.get("color", "")
+	if colors_arr.is_empty() and single_color != "":
+		colors_arr = [single_color]
 
-	current_palette.add_color(color)
+	if colors_arr.is_empty():
+		return {"success": false, "error": "Missing 'color' or 'colors' parameter"}
+
+	var added := 0
+	for c_val in colors_arr:
+		if c_val is String and Color.html_is_valid(c_val):
+			if not current_palette.is_full():
+				current_palette.add_color(Color.html(c_val))
+				added += 1
+
 	palettes_autoload.save_palette()
-	return {"success": true, "data": {"color": color.to_html()}}
+	return {"success": true, "data": {"colors_added": added, "palette_name": current_palette.name}}
 
 
 func _cmd_set_palette_color(params: Dictionary) -> Dictionary:
@@ -2856,9 +2981,9 @@ func _cmd_create_layer_group(params: Dictionary) -> Dictionary:
 # ==============================================================================
 
 func _cmd_apply_drop_shadow(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
 	var offset_x: int = int(params.get("offset_x", 1))
 	var offset_y: int = int(params.get("offset_y", 1))
@@ -2869,10 +2994,7 @@ func _cmd_apply_drop_shadow(params: Dictionary) -> Dictionary:
 	var shadow_col := Color.html(shadow_hex) if Color.html_is_valid(shadow_hex) else Color(0, 0, 0, 1)
 	shadow_col.a = opacity
 
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
-
+	var img: Image = target.image
 	var w := img.get_width()
 	var h := img.get_height()
 	var shadow_img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
@@ -2888,36 +3010,45 @@ func _cmd_apply_drop_shadow(params: Dictionary) -> Dictionary:
 					shadow_pixel_count += 1
 
 	if as_new_layer:
-		var target_idx := maxi(0, project.current_layer - 1)
+		var target_idx := maxi(0, target.layer - 1)
 		_api.project.add_new_layer(target_idx, "Shadow", 0)
-		_api.project.set_pixelcel_image(shadow_img, project.current_frame, target_idx)
+		_api.project.set_pixelcel_image(shadow_img, target.frame, target_idx)
 	else:
 		var final_img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
 		final_img.blit_rect(shadow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
 		final_img.blend_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
-		_api.project.set_pixelcel_image(final_img, project.current_frame, project.current_layer)
+		_commit_image_change(final_img, "Apply Drop Shadow", target.frame, target.layer)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"shadow_pixels": shadow_pixel_count, "offset": [offset_x, offset_y], "as_new_layer": as_new_layer}}
+	return {
+		"success": true,
+		"data": {
+			"shadow_pixels": shadow_pixel_count,
+			"offset": [offset_x, offset_y],
+			"as_new_layer": as_new_layer,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_apply_glow(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
 	var radius: int = int(params.get("radius", 2))
 	var glow_hex: String = params.get("color", "#3498db")
 	var intensity: float = float(params.get("intensity", 0.6))
 
 	var glow_col := Color.html(glow_hex) if Color.html_is_valid(glow_hex) else Color(0.2, 0.6, 1.0, 1.0)
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
+	var img: Image = target.image
 
 	var w := img.get_width()
 	var h := img.get_height()
@@ -2941,21 +3072,26 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 	var composite := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
 	composite.blend_rect(glow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
 	composite.blend_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
-	_api.project.set_pixelcel_image(composite, project.current_frame, project.current_layer)
+	_commit_image_change(composite, "Apply Glow", target.frame, target.layer)
 
-	var canvas = _api.general.get_canvas()
-	if canvas:
-		canvas.set("update_all_layers", true)
-		canvas.queue_redraw()
-
-	return {"success": true, "data": {"radius": radius, "color": glow_hex, "intensity": intensity}}
+	return {
+		"success": true,
+		"data": {
+			"radius": radius,
+			"color": glow_hex,
+			"intensity": intensity,
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
 func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
+	var project = _api.project.current_project
 	var x1: int = int(params.get("x1", 0))
 	var y1: int = int(params.get("y1", 0))
 	var x2: int = int(params.get("x2", int(project.size.x)))
@@ -2968,9 +3104,7 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 	var col1 := Color.html(col1_hex) if Color.html_is_valid(col1_hex) else Color.WHITE
 	var col2 := Color.html(col2_hex) if Color.html_is_valid(col2_hex) else Color.BLACK
 
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
+	var img: Image = target.image
 
 	var rx1 := mini(x1, x2)
 	var ry1 := mini(y1, y2)
@@ -2986,9 +3120,17 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 		[15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0 ]
 	]
 
+	var has_sel: bool = ("has_selection" in project) and project.has_selection
+	var sel_map = project.selection_map if ("selection_map" in project) else null
+
 	for y in range(ry1, ry2):
 		for x in range(rx1, rx2):
 			if x >= 0 and x < int(project.size.x) and y >= 0 and y < int(project.size.y):
+				# Clip to active selection mask if selection exists
+				if has_sel and sel_map != null:
+					if sel_map.get_pixel(x, y).a < 0.01:
+						continue
+
 				var t := 0.0
 				if grad_type == "radial":
 					var cx := float(rx1 + rx2) * 0.5
@@ -3007,9 +3149,19 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 
 				img.set_pixel(x, y, final_col)
 
-	_commit_image_change(img, "Apply Gradient", project.current_frame, project.current_layer)
+	_commit_image_change(img, "Apply Gradient", target.frame, target.layer)
 
-	return {"success": true, "data": {"type": grad_type, "dither": dither, "bounds": [rx1, ry1, rx2, ry2]}}
+	return {
+		"success": true,
+		"data": {
+			"type": grad_type,
+			"dither": dither,
+			"bounds": [rx1, ry1, rx2, ry2],
+			"frame": target.frame,
+			"layer": target.layer,
+			"selection_clipped": has_sel
+		}
+	}
 
 
 func _cmd_check_seamless_tile(params: Dictionary) -> Dictionary:
@@ -3067,9 +3219,9 @@ func _cmd_check_seamless_tile(params: Dictionary) -> Dictionary:
 # ==============================================================================
 
 func _cmd_draw_text(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
 	var text: String = params.get("text", "")
 	var start_x: int = int(params.get("x", 0))
@@ -3081,9 +3233,7 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "Missing 'text' parameter"}
 
 	var text_col := Color.html(col_hex) if Color.html_is_valid(col_hex) else Color.WHITE
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
+	var img: Image = target.image
 
 	var cur_x := start_x
 	var cur_y := start_y
@@ -3106,19 +3256,39 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 		cur_x += glyph_matrix[0].size() + 1
 		chars_drawn += 1
 
-	_commit_image_change(img, "Draw Text", project.current_frame, project.current_layer)
+	_commit_image_change(img, "Draw Text", target.frame, target.layer)
 
-	return {"success": true, "data": {"text": text, "chars_drawn": chars_drawn, "pos": [start_x, start_y]}}
+	return {
+		"success": true,
+		"data": {
+			"text": text,
+			"chars_drawn": chars_drawn,
+			"pos": [start_x, start_y],
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
 
 
-func _cmd_get_palette_usage(_params: Dictionary) -> Dictionary:
+func _cmd_get_palette_usage(params: Dictionary) -> Dictionary:
 	var project = _api.project.current_project
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var img = _get_current_image()
+	var all_layers: bool = bool(params.get("all_layers", true))
+	var frame_idx: int = int(params.get("frame", project.current_frame))
+	var img: Image = null
+
+	if all_layers:
+		img = _composite_frame_layers(project, frame_idx)
+	else:
+		var target := _get_target_cel_and_image(params)
+		if target.error != "":
+			return {"success": false, "error": target.error}
+		img = target.image
+
 	if img == null:
-		return {"success": false, "error": "No active image"}
+		return {"success": false, "error": "No image available to analyze"}
 
 	var counts: Dictionary = {}
 	var total_pixels := 0
@@ -3140,7 +3310,16 @@ func _cmd_get_palette_usage(_params: Dictionary) -> Dictionary:
 		})
 
 	usage_list.sort_custom(func(a, b): return a.count > b.count)
-	return {"success": true, "data": {"unique_colors_count": usage_list.size(), "total_colored_pixels": total_pixels, "colors": usage_list}}
+	return {
+		"success": true,
+		"data": {
+			"all_layers": all_layers,
+			"frame": frame_idx,
+			"unique_colors_count": usage_list.size(),
+			"total_colored_pixels": total_pixels,
+			"colors": usage_list
+		}
+	}
 
 
 func _cmd_clean_isolated_pixels(_params: Dictionary) -> Dictionary:

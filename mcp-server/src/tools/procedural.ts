@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 
 // Helper: Convert Hex to RGB
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -189,23 +189,27 @@ export function registerProceduralTools(server: McpServer): void {
       offset_x: coerceInt().default(1).describe("Horizontal shadow offset in pixels"),
       offset_y: coerceInt().default(1).describe("Vertical shadow offset in pixels"),
       color: z.string().default("#000000").describe("Shadow hex color"),
-      opacity: z.number().default(0.5).describe("Shadow opacity (0.0 to 1.0)"),
+      opacity: coerceFloat(0, 1).default(0.5).describe("Shadow opacity as float (0.0 to 1.0)"),
       as_new_layer: coerceBool().default(false).describe("If true, generates the shadow onto a dedicated layer beneath the sprite"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ offset_x, offset_y, color, opacity, as_new_layer }) => {
+    async ({ offset_x, offset_y, color, opacity, as_new_layer, layer, frame }) => {
       const result = await sendCommand("apply_drop_shadow", {
         offset_x,
         offset_y,
         color,
         opacity,
         as_new_layer,
+        layer,
+        frame,
       });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Drop Shadow applied: ${result.data?.shadow_pixels} pixels (offset: [${offset_x}, ${offset_y}], opacity: ${opacity}, new layer: ${as_new_layer})`
+              ? `✅ Drop Shadow applied: ${result.data?.shadow_pixels} pixels (offset: [${offset_x}, ${offset_y}], opacity: ${opacity}, new layer: ${as_new_layer}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -219,16 +223,18 @@ export function registerProceduralTools(server: McpServer): void {
     {
       radius: coerceInt(1, 10).default(2).describe("Glow halo radius in pixels"),
       color: z.string().default("#3498db").describe("Glow hex color"),
-      intensity: z.number().default(0.6).describe("Glow intensity (0.0 to 1.0)"),
+      intensity: coerceFloat(0, 1).default(0.6).describe("Glow intensity as float (0.0 to 1.0)"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ radius, color, intensity }) => {
-      const result = await sendCommand("apply_glow", { radius, color, intensity });
+    async ({ radius, color, intensity, layer, frame }) => {
+      const result = await sendCommand("apply_glow", { radius, color, intensity, layer, frame });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity}`
+              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity} on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -238,7 +244,7 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "apply_gradient",
-    "Fill a region with a smooth linear or radial color gradient, with optional ordered dithering (Bayer 4x4 matrix).",
+    "Fill a region with a smooth linear or radial color gradient, with optional ordered dithering (Bayer 4x4 matrix). Automatically clips to active selection if one exists.",
     {
       x1: coerceInt(0).default(0).describe("Top-left X of gradient area"),
       y1: coerceInt(0).default(0).describe("Top-left Y of gradient area"),
@@ -248,8 +254,10 @@ export function registerProceduralTools(server: McpServer): void {
       color2: z.string().default("#000000").describe("End hex color"),
       dither: coerceBool().default(true).describe("Enable Bayer ordered dithering"),
       type: z.enum(["linear", "radial"]).default("linear").describe("Gradient type: 'linear' or 'radial'"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x1, y1, x2, y2, color1, color2, dither, type }) => {
+    async ({ x1, y1, x2, y2, color1, color2, dither, type, layer, frame }) => {
       const result = await sendCommand("apply_gradient", {
         x1,
         y1,
@@ -259,13 +267,15 @@ export function registerProceduralTools(server: McpServer): void {
         color2,
         dither,
         type,
+        layer,
+        frame,
       });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ ${type.toUpperCase()} Gradient applied with ${dither ? "Bayer dithering" : "smooth blend"} from ${color1} to ${color2}`
+              ? `✅ ${type.toUpperCase()} Gradient applied with ${dither ? "Bayer dithering" : "smooth blend"} from ${color1} to ${color2} on [frame:${result.data?.frame}, layer:${result.data?.layer}]${result.data?.selection_clipped ? " (clipped to selection)" : ""}`
               : `❌ ${result.error}`,
           },
         ],
@@ -307,21 +317,25 @@ export function registerProceduralTools(server: McpServer): void {
       y: coerceInt().default(0).describe("Starting Y position in pixels"),
       color: z.string().default("#ffffff").describe("Font hex color"),
       font_size: coerceInt(4, 32).default(8).describe("Font line height in pixels"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ text, x, y, color, font_size }) => {
+    async ({ text, x, y, color, font_size, layer, frame }) => {
       const result = await sendCommand("draw_text", {
         text,
         x,
         y,
         color,
         font_size,
+        layer,
+        frame,
       });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Rendered "${text}" (${result.data?.chars_drawn} characters) at (${x}, ${y}) with color ${color}`
+              ? `✅ Rendered "${text}" (${result.data?.chars_drawn} characters) at (${x}, ${y}) with color ${color} on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
