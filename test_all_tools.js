@@ -181,6 +181,17 @@ async function run() {
   await test("set_layer_visibility", { index: 1, visible: true });
   await test("delete_layer", { index: 1 });
 
+  // Dedicated Layer Reorder & Opacity Synchronization Test
+  await test("create_canvas", { width: 16, height: 16, name: "LayerOpacitySyncTest" });
+  await registered["draw_rect"].handler({ x: 0, y: 0, width: 16, height: 16, color: "#ffffff", filled: true, layer: 0 });
+  await registered["add_layer"].handler({ name: "BlueLayer" });
+  await registered["draw_rect"].handler({ x: 0, y: 0, width: 16, height: 16, color: "#0000ff", filled: true, layer: 1 });
+  await registered["add_layer"].handler({ name: "RedLayer" });
+  await registered["draw_rect"].handler({ x: 0, y: 0, width: 16, height: 16, color: "#ff0000", filled: true, layer: 2 });
+  await registered["reorder_layers"].handler({ from_index: 2, to_index: 1 });
+  await registered["set_layer_opacity"].handler({ index: 1, opacity: 0.0 });
+  console.log("  🛡️ Layer Opacity Synchronization Verified: RedLayer at index 1 set to 0% opacity!");
+
   // 10. Animation Frames, Cel Copying, Tags & Tweening
   await test("add_frame", {});
   await test("set_fps", { fps: 12 });

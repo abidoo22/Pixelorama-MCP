@@ -587,11 +587,7 @@ func _cmd_export_image(params: Dictionary) -> Dictionary:
 	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
 		DirAccess.make_dir_recursive_absolute(dir_name)
 
-	# Use Pixelorama's DrawingAlgos to properly blend all visible layers
-	var drawing_algos = _api.general.get_drawing_algos()
-	var img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
-	var frame = project.frames[frame_idx]
-	drawing_algos.blend_layers(img, frame, Vector2i.ZERO, project)
+	var img := _composite_frame_layers(project, frame_idx)
 
 	var err := img.save_png(path)
 	if err == OK:
@@ -622,12 +618,9 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 	if frame_idx < 0 or frame_idx >= project.frames.size():
 		return {"success": false, "error": "Frame index out of bounds"}
 
-	var drawing_algos = _api.general.get_drawing_algos()
 	var w := int(project.size.x)
 	var h := int(project.size.y)
-	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-	var frame = project.frames[frame_idx]
-	drawing_algos.blend_layers(img, frame, Vector2i.ZERO, project)
+	var img := _composite_frame_layers(project, frame_idx)
 
 	var png_buffer := img.save_png_to_buffer()
 	var b64 := Marshalls.raw_to_base64(png_buffer)
@@ -1575,6 +1568,20 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 
 	_api.project.add_new_layer(above_layer, layer_name, type)
 
+	# Ensure all layer.index properties are strictly synchronized
+	for i in range(project.layers.size()):
+		project.layers[i].index = i
+	project.order_layers()
+	if project.has_signal("layers_updated"):
+		project.layers_updated.emit()
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
 	return {"success": true, "data": {"name": layer_name, "type": type, "above_layer": above_layer}}
 
 
@@ -1594,8 +1601,17 @@ func _cmd_delete_layer(params: Dictionary) -> Dictionary:
 	_api.project.current_layer = project.current_layer
 	_api.project.select_cels([[project.current_frame, project.current_layer]])
 
+	# Ensure all layer.index properties are strictly synchronized
+	for i in range(project.layers.size()):
+		project.layers[i].index = i
+	project.order_layers()
+	if project.has_signal("layers_updated"):
+		project.layers_updated.emit()
+
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
@@ -1614,10 +1630,18 @@ func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
 	var opacity: float = params.get("opacity", 1.0)
 	opacity = clampf(opacity, 0.0, 1.0)
 	project.layers[layer_index].opacity = opacity
+
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
+
+	var timeline = _api.get_node_or_null("/root/Global/AnimationTimeline")
+	if timeline and timeline.has_method("_update_layer_settings_ui"):
+		timeline._update_layer_settings_ui()
+
 	return {"success": true, "data": {"index": layer_index, "opacity": opacity}}
 
 
@@ -1634,6 +1658,8 @@ func _cmd_set_layer_blend_mode(params: Dictionary) -> Dictionary:
 	project.layers[layer_index].blend_mode = blend_mode
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "blend_mode": blend_mode}}
@@ -1652,6 +1678,8 @@ func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
 	project.layers[layer_index].visible = visible
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 	return {"success": true, "data": {"index": layer_index, "visible": visible}}
@@ -1701,6 +1729,15 @@ func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
 			var insert_cel_at: int = mini(to_index, frame.cels.size())
 			frame.cels.insert(insert_cel_at, cel_item)
 
+	# Update all layer.index properties to match their new array positions
+	for i in range(project.layers.size()):
+		project.layers[i].index = i
+
+	# Synchronize ordered_layers and emit layers_updated
+	project.order_layers()
+	if project.has_signal("layers_updated"):
+		project.layers_updated.emit()
+
 	# Update active layer index
 	if project.current_layer == from_index:
 		project.current_layer = to_index
@@ -1714,6 +1751,8 @@ func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
@@ -3264,17 +3303,61 @@ func _color_distance(c1: Color, c2: Color) -> float:
 
 
 func _blend_frame_layers(project, frame_idx: int) -> Image:
-	var blended = Image.create_empty(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
-	if frame_idx >= 0 and frame_idx < project.frames.size():
-		var frame = project.frames[frame_idx]
-		for l_idx in range(project.layers.size()):
-			var layer = project.layers[l_idx]
-			if layer.visible and l_idx < frame.cels.size():
-				var cel = frame.cels[l_idx]
-				if cel.get_class_name() == "PixelCel":
-					var c_img = cel.get_image()
-					if c_img and not c_img.is_empty():
-						blended.blend_rect(c_img, Rect2i(Vector2i.ZERO, c_img.get_size()), Vector2i.ZERO)
+	return _composite_frame_layers(project, frame_idx)
+
+
+func _composite_frame_layers(project, frame_idx: int) -> Image:
+	var w := int(project.size.x)
+	var h := int(project.size.y)
+	var blended := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	if frame_idx < 0 or frame_idx >= project.frames.size():
+		return blended
+
+	var frame = project.frames[frame_idx]
+
+	# Ensure ordered_layers is up-to-date
+	project.order_layers(frame_idx)
+
+	for i in range(project.layers.size()):
+		var layer_idx: int = project.ordered_layers[i] if i < project.ordered_layers.size() else i
+		if layer_idx < 0 or layer_idx >= project.layers.size():
+			continue
+
+		var layer = project.layers[layer_idx]
+		if not layer.visible or not layer.is_visible_in_hierarchy():
+			continue
+		if layer_idx >= frame.cels.size():
+			continue
+
+		var cel = frame.cels[layer_idx]
+		if cel == null or not cel.has_method("get_image"):
+			continue
+
+		var cel_img: Image = cel.get_image()
+		if cel_img == null or cel_img.is_empty():
+			continue
+
+		var final_opacity: float = layer.opacity
+		if "opacity" in cel:
+			final_opacity *= float(cel.opacity)
+
+		if final_opacity <= 0.001:
+			continue
+
+		if final_opacity < 0.999:
+			var src: Image = cel_img.duplicate()
+			var sw: int = src.get_width()
+			var sh: int = src.get_height()
+			for y in range(sh):
+				for x in range(sw):
+					var col: Color = src.get_pixel(x, y)
+					if col.a > 0.001:
+						col.a *= final_opacity
+						src.set_pixel(x, y, col)
+			blended.blend_rect(src, Rect2i(Vector2i.ZERO, src.get_size()), Vector2i.ZERO)
+		else:
+			blended.blend_rect(cel_img, Rect2i(Vector2i.ZERO, cel_img.get_size()), Vector2i.ZERO)
+
 	return blended
 
 
