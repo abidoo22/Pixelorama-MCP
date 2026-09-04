@@ -135,8 +135,8 @@ export function registerDrawingTools(server: McpServer): void {
     {
       x: coerceInt().default(0).describe("Top-left X coordinate"),
       y: coerceInt().default(0).describe("Top-left Y coordinate"),
-      width: coerceInt(1, 128).default(16).describe("Width of region (max 128)"),
-      height: coerceInt(1, 128).default(16).describe("Height of region (max 128)"),
+      width: coerceInt(1, 512).default(16).describe("Width of region (max 512)"),
+      height: coerceInt(1, 512).default(16).describe("Height of region (max 512)"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
@@ -218,7 +218,6 @@ export function registerDrawingTools(server: McpServer): void {
       y: coerceInt().describe("Y coordinate (0-based, top to bottom)"),
       color: z
         .string()
-        .default("#000000")
         .describe("Pixel color as hex string (e.g. '#FF5733', '#00FF00FF')"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
@@ -253,7 +252,6 @@ export function registerDrawingTools(server: McpServer): void {
       y2: coerceInt().describe("End Y coordinate"),
       color: z
         .string()
-        .default("#000000")
         .describe("Line color as hex string"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
@@ -296,7 +294,6 @@ export function registerDrawingTools(server: McpServer): void {
       height: coerceInt(1).describe("Rectangle height in pixels"),
       color: z
         .string()
-        .default("#000000")
         .describe("Rectangle color as hex string"),
       filled: coerceBool()
         .default(true)
@@ -343,7 +340,6 @@ export function registerDrawingTools(server: McpServer): void {
       ry: coerceInt(1).describe("Vertical radius in pixels"),
       color: z
         .string()
-        .default("#000000")
         .describe("Ellipse color as hex string"),
       filled: coerceBool()
         .default(true)
@@ -388,7 +384,6 @@ export function registerDrawingTools(server: McpServer): void {
       y: coerceInt().describe("Seed Y coordinate for flood fill"),
       color: z
         .string()
-        .default("#000000")
         .describe("Fill color as hex string"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
@@ -502,7 +497,6 @@ export function registerDrawingTools(server: McpServer): void {
       ).describe("Array of points to connect with lines [{x, y}, ...]"),
       color: z
         .string()
-        .default("#000000")
         .describe("Line color as hex string"),
       closed: coerceBool()
         .default(false)
@@ -543,7 +537,6 @@ export function registerDrawingTools(server: McpServer): void {
       ).describe("Array of vertices [{x, y}, ...] (minimum 3)"),
       color: z
         .string()
-        .default("#000000")
         .describe("Polygon color as hex string"),
       filled: coerceBool()
         .default(true)

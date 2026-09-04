@@ -19,6 +19,18 @@ func _init():
 	packer.add_file(prefix + "Main.gd", plugin_dir + "Main.gd")
 	packer.add_file(prefix + "command_handler.gd", plugin_dir + "command_handler.gd")
 
+	# Package GIF exporter shaders to fix root/relative load resolution in Godot 4
+	var similar_shader = "pixelorama-source/addons/gdgifexporter/lookup_similar.gdshader"
+	var color_shader = "pixelorama-source/addons/gdgifexporter/lookup_color.gdshader"
+	if FileAccess.file_exists(similar_shader):
+		packer.add_file("res://lookup_similar.gdshader", similar_shader)
+		packer.add_file("res://addons/gdgifexporter/lookup_similar.gdshader", similar_shader)
+	if FileAccess.file_exists(color_shader):
+		packer.add_file("res://lookup_color.gdshader", color_shader)
+		packer.add_file("res://addons/gdgifexporter/lookup_color.gdshader", color_shader)
+	if FileAccess.file_exists(plugin_dir + "converter.gd"):
+		packer.add_file("res://addons/gdgifexporter/converter.gd", plugin_dir + "converter.gd")
+
 	err = packer.flush(true)
 	if err != OK:
 		print("Error flushing PCK: %s" % err)

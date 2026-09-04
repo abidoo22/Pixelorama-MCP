@@ -91,13 +91,17 @@ export function registerFrameTools(server: McpServer): void {
       const params: Record<string, unknown> = {};
       if (after_frame !== undefined) params.after_frame = after_frame;
       const result = await sendCommand("add_frame", params);
+      let text = result.success
+        ? `✅ Frame added (total: ${result.data?.total_frames})`
+        : `❌ ${result.error}`;
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Frame added (total: ${result.data?.total_frames})`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };
@@ -116,13 +120,17 @@ export function registerFrameTools(server: McpServer): void {
       const params: Record<string, unknown> = {};
       if (index !== undefined) params.index = index;
       const result = await sendCommand("delete_frame", params);
+      let text = result.success
+        ? `✅ Frame ${index ?? "current"} deleted (total: ${result.data?.total_frames})`
+        : `❌ ${result.error}`;
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Frame ${index ?? "current"} deleted (total: ${result.data?.total_frames})`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };
@@ -141,13 +149,20 @@ export function registerFrameTools(server: McpServer): void {
       const params: Record<string, unknown> = {};
       if (index !== undefined) params.index = index;
       const result = await sendCommand("duplicate_frame", params);
+      let text = result.success
+        ? `✅ Frame duplicated at index ${result.data?.inserted_at} (total: ${result.data?.total_frames}, pixels copied: ${result.data?.pixels_copied ?? 0})`
+        : `❌ ${result.error}`;
+      if (result.data?.warning) {
+        text += `\n⚠️ Warning: ${result.data.warning}`;
+      }
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Frame duplicated at index ${result.data?.inserted_at} (total: ${result.data?.total_frames})`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };
@@ -242,13 +257,17 @@ export function registerFrameTools(server: McpServer): void {
         dst_frame,
         dst_layer,
       });
+      let text = result.success
+        ? `✅ Cel [frame:${src_frame} layer:${src_layer}] → [frame:${dst_frame} layer:${dst_layer}] (${result.data?.pixels_copied ?? 0} pixels copied)`
+        : `❌ ${result.error}`;
+      if (result.data?.warning) {
+        text += `\n⚠️ Warning: ${result.data.warning}`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Cel [frame:${src_frame} layer:${src_layer}] → [frame:${dst_frame} layer:${dst_layer}]`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };

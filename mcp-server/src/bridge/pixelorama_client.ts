@@ -10,7 +10,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface BridgeResponse {
   success: boolean;
-  data?: Record<string, unknown>;
+  data?: Record<string, any>;
   error?: string;
 }
 

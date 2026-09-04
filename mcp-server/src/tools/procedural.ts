@@ -224,17 +224,20 @@ export function registerProceduralTools(server: McpServer): void {
       radius: coerceInt(1, 10).default(2).describe("Glow halo radius in pixels"),
       color: z.string().default("#3498db").describe("Glow hex color"),
       intensity: coerceFloat(0, 1).default(0.6).describe("Glow intensity as float (0.0 to 1.0)"),
+      as_new_layer: coerceBool()
+        .default(false)
+        .describe("If true, places the glow on a new layer behind current layer instead of merging"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ radius, color, intensity, layer, frame }) => {
-      const result = await sendCommand("apply_glow", { radius, color, intensity, layer, frame });
+    async ({ radius, color, intensity, as_new_layer, layer, frame }) => {
+      const result = await sendCommand("apply_glow", { radius, color, intensity, as_new_layer, layer, frame });
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity} on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity} (new layer: ${as_new_layer}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -285,21 +288,39 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "check_seamless_tile",
-    "Validate and optionally fix border seams on tiles so that top/bottom and left/right edges wrap seamlessly.",
+    "Validate and optionally fix border seams on tiles so that top/bottom and left/right edges wrap seamlessly. Supports tile grid dimensions for multi-tile tileset canvases.",
     {
-      fix_seams: coerceBool().default(false).describe("If true, automatically blends/fixes border seams to make the tile 100% seamless"),
+      tile_width: coerceInt(1).optional().describe("Tile width in pixels for multi-tile tilesets (defaults to full canvas width)"),
+      tile_height: coerceInt(1).optional().describe("Tile height in pixels for multi-tile tilesets (defaults to full canvas height)"),
+      fix_seams: coerceBool().default(false).describe("If true, automatically blends/fixes border seams to make tiles seamless"),
+      dry_run: coerceBool().default(false).describe("If true with fix_seams, simulates seam correction without modifying canvas pixels"),
+      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ fix_seams }) => {
-      const result = await sendCommand("check_seamless_tile", { fix_seams });
+    async ({ tile_width, tile_height, fix_seams, dry_run, layer, frame }) => {
+      const params: Record<string, unknown> = { fix_seams, dry_run };
+      if (tile_width !== undefined) params.tile_width = tile_width;
+      if (tile_height !== undefined) params.tile_height = tile_height;
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      const result = await sendCommand("check_seamless_tile", params);
       if (result.success && result.data) {
         const d = result.data;
+        let text = d.is_seamless
+          ? `✅ All ${d.tiles_checked ?? 1} tile(s) (${d.tile_width}×${d.tile_height}) are 100% SEAMLESS!`
+          : `⚠️ Seamless tile errors detected across ${d.tiles_checked ?? 1} tile(s): ${d.horizontal_seam_errors} horizontal mismatches, ${d.vertical_seam_errors} vertical mismatches.`;
+        if (d.seams_fixed) {
+          text += `\n🔧 Seams were automatically blended and fixed!`;
+        } else if (fix_seams && dry_run) {
+          text += `\n🔎 Dry-run mode: no pixels modified. Run with dry_run: false to commit fixes.`;
+        } else if (!d.is_seamless) {
+          text += `\n💡 Pass fix_seams: true to auto-correct.`;
+        }
         return {
           content: [
             {
               type: "text" as const,
-              text: d.is_seamless
-                ? `✅ Tile is 100% SEAMLESS! (Horizontal errors: ${d.horizontal_seam_errors}, Vertical errors: ${d.vertical_seam_errors})`
-                : `⚠️ Seamless tile errors detected: ${d.horizontal_seam_errors} horizontal mismatches, ${d.vertical_seam_errors} vertical mismatches. Pass fix_seams: true to auto-correct.`,
+              text,
             },
           ],
         };

@@ -447,4 +447,121 @@ export function registerAiHelperTools(server: McpServer): void {
       return { content: [{ type: "text" as const, text: plan }] };
     }
   );
+
+  server.tool(
+    "validate_sprite",
+    "Run QA and sanity checks on a sprite or frame: detect enclosed accidental transparent holes, stray orphan pixels, count unique colors, and compute exact content bounding box.",
+    {
+      all_layers: coerceBool()
+        .default(false)
+        .describe("If true, composite all layers for analysis; if false, analyze target cel only"),
+      frame: coerceInt().optional().describe("Frame index (defaults to current frame)"),
+      layer: coerceInt().optional().describe("Layer index (defaults to current layer, ignored if all_layers=true)"),
+      check_holes: coerceBool().default(true).describe("Detect transparent holes completely enclosed by solid pixels"),
+      check_orphans: coerceBool().default(true).describe("Detect isolated stray pixels floating with no neighbors"),
+      orphan_distance: coerceInt(1, 5).default(1).describe("Search distance for stray pixel neighbors"),
+    },
+    async ({ all_layers, frame, layer, check_holes, check_orphans, orphan_distance }) => {
+      const params: Record<string, unknown> = {
+        all_layers,
+        check_holes,
+        check_orphans,
+        orphan_distance,
+      };
+      if (frame !== undefined) params.frame = frame;
+      if (layer !== undefined) params.layer = layer;
+
+      const result = await sendCommand("validate_sprite", params);
+      if (result.success && result.data) {
+        const d = result.data;
+        if (d.empty) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `⚠️ Sprite QA: Target is completely EMPTY (0 opaque pixels) [frame:${d.frame}, layer:${d.layer}].`,
+              },
+            ],
+          };
+        }
+
+        let report = `## 🛡️ Sprite QA Report [frame:${d.frame}, layer:${d.layer}]\n`;
+        report += `- **Opaque Pixels**: ${d.total_opaque_pixels}\n`;
+        report += `- **Bounding Box**: (${d.bounds.x}, ${d.bounds.y}) size ${d.bounds.width}×${d.bounds.height} (Canvas: ${d.canvas_size.width}×${d.canvas_size.height})\n`;
+        report += `- **Unique Colors**: ${d.unique_color_count} (${d.unique_colors.join(", ")})\n`;
+
+        if (d.enclosed_hole_count === 0) {
+          report += `- **Enclosed Holes**: ✅ None detected\n`;
+        } else {
+          report += `- **Enclosed Holes**: ⚠️ Found ${d.enclosed_hole_count} hole(s):\n`;
+          for (let i = 0; i < d.enclosed_holes.length; i++) {
+            const h = d.enclosed_holes[i];
+            report += `  - Hole #${i + 1}: ${h.pixel_count} px at center (${h.center[0]}, ${h.center[1]}), bbox: ${h.bounds.width}×${h.bounds.height}\n`;
+          }
+        }
+
+        if (d.stray_pixel_count === 0) {
+          report += `- **Stray/Orphan Pixels**: ✅ None detected\n`;
+        } else {
+          report += `- **Stray/Orphan Pixels**: ⚠️ Found ${d.stray_pixel_count} orphan pixel(s):\n`;
+          for (const s of d.stray_pixels.slice(0, 15)) {
+            report += `  - (${s.x}, ${s.y}) color: ${s.color}\n`;
+          }
+          if (d.stray_pixel_count > 15) {
+            report += `  - ... and ${d.stray_pixel_count - 15} more\n`;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: report,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "get_history",
+    "Inspect the current UndoRedo action stack, history pointer, and available undo/redo states in Pixelorama.",
+    {
+      limit: coerceInt(1, 100).default(20).describe("Maximum recent actions to list"),
+    },
+    async ({ limit }) => {
+      const result = await sendCommand("get_history", { limit });
+      if (result.success && result.data) {
+        const d = result.data;
+        let text = `## 📜 UndoRedo History\n`;
+        text += `- **Total Actions**: ${d.history_count}\n`;
+        text += `- **Current Action**: #${d.current_action_index} ("${d.current_action_name || "None"}")\n`;
+        text += `- **Can Undo**: ${d.can_undo ? "Yes ↩️" : "No"}\n`;
+        text += `- **Can Redo**: ${d.can_redo ? "Yes ↪️" : "No"}\n`;
+        if (d.active_cursor) {
+          text += `- **Active Cursor**: frame ${d.active_cursor.frame}, layer ${d.active_cursor.layer} ("${d.active_cursor.layer_name}")\n`;
+        }
+        text += `\n### Recent Actions:\n`;
+        if (!d.actions || d.actions.length === 0) {
+          text += `  (No actions in stack)\n`;
+        } else {
+          for (const a of d.actions) {
+            const marker = a.is_current ? "👉 " : "   ";
+            text += `${marker}[#${a.index}] ${a.name}${a.is_current ? " (current)" : ""}\n`;
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
 }

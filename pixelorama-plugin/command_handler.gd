@@ -126,6 +126,8 @@ func _register_tools() -> void:
 	_tool_registry["transform_selection"] = Callable(self, "_cmd_transform_selection")
 	_tool_registry["select_all"] = Callable(self, "_cmd_select_all")
 	_tool_registry["deselect"] = Callable(self, "_cmd_deselect")
+	_tool_registry["validate_sprite"] = Callable(self, "_cmd_validate_sprite")
+	_tool_registry["get_history"] = Callable(self, "_cmd_get_history")
 
 	print(LOG_TAG + "Registered %d tools" % _tool_registry.size())
 
@@ -149,6 +151,23 @@ func execute(tool_name: String, params: Dictionary) -> Dictionary:
 # ─────────────────────────────────────────────
 # SHARED HELPERS
 # ─────────────────────────────────────────────
+
+func _get_active_cursor_info(project = null) -> Dictionary:
+	if project == null:
+		project = _api.project.current_project
+	if project == null:
+		return {"frame": 0, "layer": 0, "layer_name": ""}
+	var frame_idx: int = project.current_frame
+	var layer_idx: int = project.current_layer
+	var layer_name := ""
+	if layer_idx >= 0 and layer_idx < project.layers.size():
+		layer_name = project.layers[layer_idx].name
+	return {
+		"frame": frame_idx,
+		"layer": layer_idx,
+		"layer_name": layer_name
+	}
+
 
 func _get_current_cel():
 	var project = _api.project.current_project
@@ -843,6 +862,7 @@ func _cmd_undo(_params: Dictionary) -> Dictionary:
 	if ur != null:
 		if ur.has_undo():
 			var action_name: String = ur.get_current_action_name()
+			var prev_cursor := _get_active_cursor_info(project)
 			ur.undo()
 			var canvas = _api.general.get_canvas()
 			if canvas:
@@ -853,23 +873,19 @@ func _cmd_undo(_params: Dictionary) -> Dictionary:
 				if canvas.has_method("update_texture") and project:
 					canvas.update_texture(project.current_layer)
 
-			var layer_name := ""
-			var layer_idx := -1
-			var frame_idx := -1
-			if project:
-				layer_idx = project.current_layer
-				frame_idx = project.current_frame
-				if layer_idx >= 0 and layer_idx < project.layers.size():
-					layer_name = project.layers[layer_idx].name
+			var cur_cursor := _get_active_cursor_info(project)
 
 			return {
 				"success": true,
 				"data": {
 					"message": "Undone: %s" % action_name,
 					"action": action_name,
-					"layer_index": layer_idx,
-					"layer_name": layer_name,
-					"frame": frame_idx,
+					"target_layer": prev_cursor.layer_name,
+					"target_layer_index": prev_cursor.layer,
+					"active_layer_index": cur_cursor.layer,
+					"active_layer_name": cur_cursor.layer_name,
+					"frame": cur_cursor.frame,
+					"active_cursor": cur_cursor,
 					"has_undo": ur.has_undo(),
 					"has_redo": ur.has_redo()
 				}
@@ -884,8 +900,8 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 	var ur = _get_undo_redo()
 	if ur != null:
 		if ur.has_redo():
-			var action_name: String = ur.get_current_action_name()
 			ur.redo()
+			var action_name: String = ur.get_current_action_name()
 			var canvas = _api.general.get_canvas()
 			if canvas:
 				if "project_changed" in canvas:
@@ -895,23 +911,17 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 				if canvas.has_method("update_texture") and project:
 					canvas.update_texture(project.current_layer)
 
-			var layer_name := ""
-			var layer_idx := -1
-			var frame_idx := -1
-			if project:
-				layer_idx = project.current_layer
-				frame_idx = project.current_frame
-				if layer_idx >= 0 and layer_idx < project.layers.size():
-					layer_name = project.layers[layer_idx].name
+			var cur_cursor := _get_active_cursor_info(project)
 
 			return {
 				"success": true,
 				"data": {
 					"message": "Redone: %s" % action_name,
 					"action": action_name,
-					"layer_index": layer_idx,
-					"layer_name": layer_name,
-					"frame": frame_idx,
+					"layer_index": cur_cursor.layer,
+					"layer_name": cur_cursor.layer_name,
+					"frame": cur_cursor.frame,
+					"active_cursor": cur_cursor,
 					"has_undo": ur.has_undo(),
 					"has_redo": ur.has_redo()
 				}
@@ -1731,7 +1741,21 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"name": layer_name, "type": type, "above_layer": above_layer}}
+	var new_layer_idx := above_layer + 1
+	var actual_name := layer_name
+	if new_layer_idx < project.layers.size():
+		actual_name = project.layers[new_layer_idx].name
+
+	return {
+		"success": true,
+		"data": {
+			"name": actual_name,
+			"type": type,
+			"above_layer": above_layer,
+			"layer_index": new_layer_idx,
+			"active_cursor": _get_active_cursor_info(project)
+		}
+	}
 
 
 func _cmd_delete_layer(params: Dictionary) -> Dictionary:
@@ -1764,7 +1788,15 @@ func _cmd_delete_layer(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"deleted": layer_index, "remaining_layers": project.layers.size(), "current_layer": project.current_layer}}
+	return {
+		"success": true,
+		"data": {
+			"deleted": layer_index,
+			"remaining_layers": project.layers.size(),
+			"current_layer": project.current_layer,
+			"active_cursor": _get_active_cursor_info(project)
+		}
+	}
 
 
 func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
@@ -1911,7 +1943,8 @@ func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
 			"from_index": from_index,
 			"to_index": to_index,
 			"layers_count": project.layers.size(),
-			"current_layer": project.current_layer
+			"current_layer": project.current_layer,
+			"active_cursor": _get_active_cursor_info(project)
 		}
 	}
 
@@ -1952,7 +1985,14 @@ func _cmd_add_frame(params: Dictionary) -> Dictionary:
 
 	_api.project.add_new_frame(after_frame)
 
-	return {"success": true, "data": {"after_frame": after_frame, "total_frames": project.frames.size()}}
+	return {
+		"success": true,
+		"data": {
+			"after_frame": after_frame,
+			"total_frames": project.frames.size(),
+			"active_cursor": _get_active_cursor_info(project)
+		}
+	}
 
 
 func _cmd_get_frames(_params: Dictionary) -> Dictionary:
@@ -2000,7 +2040,8 @@ func _cmd_delete_frame(params: Dictionary) -> Dictionary:
 		"data": {
 			"deleted": frame_index,
 			"total_frames": project.frames.size(),
-			"current_frame": project.current_frame
+			"current_frame": project.current_frame,
+			"active_cursor": _get_active_cursor_info(project)
 		}
 	}
 
@@ -2014,23 +2055,86 @@ func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
 	if src_index < 0 or src_index >= project.frames.size():
 		return {"success": false, "error": "Invalid frame index: %d" % src_index}
 
-	var insert_at := src_index + 1
-	_api.project.add_new_frame(src_index)
-
-	# Copy pixel cel images from src_index into newly inserted frame (at insert_at)
+	var insert_at: int = src_index + 1
 	var src_frame = project.frames[src_index]
-	var dst_frame = project.frames[insert_at]
-	for layer_idx in range(mini(src_frame.cels.size(), dst_frame.cels.size())):
-		var src_cel = src_frame.cels[layer_idx]
-		var dst_cel = dst_frame.cels[layer_idx]
-		if src_cel != null and dst_cel != null and src_cel.get_class_name() == "PixelCel" and dst_cel.get_class_name() == "PixelCel":
-			var src_img: Image = src_cel.get_image()
-			if src_img:
-				var copy_img := src_img.duplicate()
-				_api.project.set_pixelcel_image(copy_img, insert_at, layer_idx)
+	var frame_script = src_frame.get_script()
+	var new_frame = frame_script.new() if frame_script else null
+	if new_frame == null:
+		var frame_class = load("res://src/Classes/Frame.gd")
+		if frame_class:
+			new_frame = frame_class.new()
+	if new_frame != null and "duration" in new_frame:
+		new_frame.duration = src_frame.duration
 
-	dst_frame.duration = src_frame.duration
-	return {"success": true, "data": {"duplicated_from": src_index, "inserted_at": insert_at, "total_frames": project.frames.size()}}
+	var total_pixels_copied: int = 0
+
+	for l in range(project.layers.size()):
+		var src_cel = src_frame.cels[l]
+		var new_cel = src_cel.duplicate_cel()
+		if project.layers[l].new_cels_linked:
+			if src_cel.link_set == null:
+				src_cel.link_set = {}
+			new_cel.set_content(src_cel.get_content(), src_cel.image_texture)
+			new_cel.link_set = src_cel.link_set
+		else:
+			new_cel.set_content(src_cel.copy_content())
+
+		if new_cel.get_class_name() == "PixelCel":
+			var img: Image = new_cel.get_image()
+			if img:
+				for y in range(img.get_height()):
+					for x in range(img.get_width()):
+						if img.get_pixel(x, y).a > 0.01:
+							total_pixels_copied += 1
+
+		new_frame.cels.append(new_cel)
+
+	# Animation tags replication
+	var new_animation_tags: Array = project.animation_tags.duplicate()
+	for i in new_animation_tags.size():
+		new_animation_tags[i] = new_animation_tags[i].duplicate()
+	for tag in new_animation_tags:
+		if insert_at >= tag.from && insert_at <= tag.to:
+			tag.to += 1
+		elif insert_at < tag.from:
+			tag.from += 1
+			tag.to += 1
+
+	project.undo_redo.create_action("Add Frame")
+	project.undo_redo.add_do_method(project.add_frames.bind([new_frame], [insert_at]))
+	project.undo_redo.add_undo_method(project.remove_frames.bind([insert_at]))
+	project.undo_redo.add_do_property(project, "animation_tags", new_animation_tags)
+	project.undo_redo.add_undo_property(project, "animation_tags", project.animation_tags)
+	project.undo_redo.add_do_method(project.change_cel.bind(insert_at))
+	project.undo_redo.add_undo_method(project.change_cel.bind(project.current_frame))
+	var global_node = _api.get_node_or_null("/root/Global")
+	if global_node and global_node.has_method("undo_or_redo"):
+		project.undo_redo.add_do_method(global_node.undo_or_redo.bind(false))
+		project.undo_redo.add_undo_method(global_node.undo_or_redo.bind(true))
+	project.undo_redo.commit_action()
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
+	var warning := ""
+	if total_pixels_copied == 0:
+		warning = "Source frame contained 0 colored pixels; new frame has empty cels"
+
+	return {
+		"success": true,
+		"data": {
+			"duplicated_from": src_index,
+			"inserted_at": insert_at,
+			"total_frames": project.frames.size(),
+			"pixels_copied": total_pixels_copied,
+			"warning": warning,
+			"active_cursor": _get_active_cursor_info(project)
+		}
+	}
 
 
 func _cmd_set_frame_duration(params: Dictionary) -> Dictionary:
@@ -2129,14 +2233,35 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 	var src_image: Image = src_cel.get_image()
 	var copy_img = Image.create_empty(src_image.get_width(), src_image.get_height(), false, Image.FORMAT_RGBA8)
 	copy_img.copy_from(src_image)
-	_api.project.set_pixelcel_image(copy_img, dst_frame, dst_layer)
+
+	var used_rect := src_image.get_used_rect()
+	var pixels_copied := 0
+	if used_rect.size.x > 0 and used_rect.size.y > 0:
+		for y in range(used_rect.position.y, used_rect.end.y):
+			for x in range(used_rect.position.x, used_rect.end.x):
+				if src_image.get_pixel(x, y).a > 0.001:
+					pixels_copied += 1
+
+	_commit_image_change(copy_img, "Copy Cel", dst_frame, dst_layer)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"src_frame": src_frame, "src_layer": src_layer, "dst_frame": dst_frame, "dst_layer": dst_layer}}
+	var result_data: Dictionary = {
+		"src_frame": src_frame,
+		"src_layer": src_layer,
+		"dst_frame": dst_frame,
+		"dst_layer": dst_layer,
+		"pixels_copied": pixels_copied
+	}
+	if pixels_copied == 0:
+		result_data["warning"] = "Source cel was completely transparent"
+
+	return {"success": true, "data": result_data}
 
 
 func _cmd_clear_cel(params: Dictionary) -> Dictionary:
@@ -2614,6 +2739,208 @@ func _cmd_import_spritesheet(params: Dictionary) -> Dictionary:
 	}
 
 
+class SafeMedianCutQuant extends RefCounted:
+	var transparency: bool = false
+
+	func quantize(image: Image) -> Array:
+		var data: PackedByteArray = image.get_data()
+		var unique_colors: Dictionary = {}
+		var pixels: Array = []
+		transparency = false
+
+		for i in range(0, data.size(), 4):
+			if data[i + 3] == 0:
+				transparency = true
+				continue
+			var r = data[i]
+			var g = data[i + 1]
+			var b = data[i + 2]
+			var key = (r << 16) | (g << 8) | b
+			if not key in unique_colors:
+				unique_colors[key] = [r, g, b]
+			pixels.append([r, g, b])
+
+		if pixels.size() == 0:
+			return [PackedByteArray(), [], transparency]
+
+		var max_palette_size: int = 255 if transparency else 256
+		var color_array: Array = []
+
+		if unique_colors.size() <= max_palette_size:
+			color_array = unique_colors.values()
+		else:
+			var buckets := [pixels]
+			for step in range(8):
+				var next_buckets := []
+				for b in buckets:
+					if b.size() > 1:
+						var cut_res = _median_cut_bucket(b)
+						if cut_res[0].size() == 0 or cut_res[1].size() == 0:
+							next_buckets += cut_res
+						else:
+							next_buckets += cut_res
+					else:
+						next_buckets.append(b)
+				buckets = next_buckets
+
+			var avg_colors: Dictionary = {}
+			for b in buckets:
+				if b.size() > 0:
+					var avg = _avg_bucket(b)
+					avg_colors[avg] = true
+			color_array = avg_colors.keys()
+
+			while color_array.size() > max_palette_size:
+				color_array.pop_back()
+
+		if transparency:
+			color_array = [[0, 0, 0]] + color_array
+
+		var codes := _map_pixels_to_codes(image, color_array, transparency)
+		return [codes, color_array, transparency]
+
+	func _median_cut_bucket(colors: Array) -> Array:
+		var min_c := [255, 255, 255]
+		var max_c := [0, 0, 0]
+		for c in colors:
+			for ch in range(3):
+				min_c[ch] = mini(c[ch], min_c[ch])
+				max_c[ch] = maxi(c[ch], max_c[ch])
+		var dr: int = int(max_c[0]) - int(min_c[0])
+		var dg: int = int(max_c[1]) - int(min_c[1])
+		var db: int = int(max_c[2]) - int(min_c[2])
+		var axis := 0
+		if dg > dr and dg >= db:
+			axis = 1
+		elif db > dr and db >= dg:
+			axis = 2
+
+		var axis_vals: Array = []
+		for c in colors:
+			axis_vals.append(c[axis])
+		axis_vals.sort()
+		var median_val: int = axis_vals[axis_vals.size() >> 1]
+
+		var left := []
+		var right := []
+		for c in colors:
+			if c[axis] < median_val:
+				left.append(c)
+			else:
+				right.append(c)
+		return [left, right]
+
+	func _avg_bucket(b: Array) -> Array:
+		var r := 0
+		var g := 0
+		var b_tot := 0
+		var sz := b.size()
+		for c in b:
+			r += c[0]
+			g += c[1]
+			b_tot += c[2]
+		return [r / sz, g / sz, b_tot / sz]
+
+	func _map_pixels_to_codes(image: Image, colors: Array, has_transparency: bool) -> PackedByteArray:
+		var gpu_res := _try_gpu(image, colors)
+		if not gpu_res.is_empty():
+			return gpu_res
+		return _cpu_map(image, colors, has_transparency)
+
+	func _try_gpu(image: Image, colors: Array) -> PackedByteArray:
+		if DisplayServer.get_name() == "headless":
+			return PackedByteArray()
+		var shader: Shader = null
+		if ResourceLoader.exists("res://lookup_similar.gdshader"):
+			shader = load("res://lookup_similar.gdshader") as Shader
+		elif ResourceLoader.exists("res://addons/gdgifexporter/lookup_similar.gdshader"):
+			shader = load("res://addons/gdgifexporter/lookup_similar.gdshader") as Shader
+		if shader == null:
+			return PackedByteArray()
+
+		var vp := RenderingServer.viewport_create()
+		var canvas := RenderingServer.canvas_create()
+		RenderingServer.viewport_attach_canvas(vp, canvas)
+		RenderingServer.viewport_set_size(vp, image.get_width(), image.get_height())
+		RenderingServer.viewport_set_disable_3d(vp, true)
+		RenderingServer.viewport_set_active(vp, true)
+
+		var ci_rid := RenderingServer.canvas_item_create()
+		RenderingServer.viewport_set_canvas_transform(vp, canvas, Transform3D())
+		RenderingServer.canvas_item_set_parent(ci_rid, canvas)
+		var texture := ImageTexture.create_from_image(image)
+		RenderingServer.canvas_item_add_texture_rect(ci_rid, Rect2(Vector2.ZERO, image.get_size()), texture)
+
+		var mat_rid := RenderingServer.material_create()
+		RenderingServer.material_set_shader(mat_rid, shader.get_rid())
+		var lut := Image.create(256, 1, false, Image.FORMAT_RGB8)
+		lut.fill(Color8(colors[0][0], colors[0][1], colors[0][2]))
+		for i in colors.size():
+			lut.set_pixel(i, 0, Color8(colors[i][0], colors[i][1], colors[i][2]))
+		var lut_tex := ImageTexture.create_from_image(lut)
+		RenderingServer.material_set_param(mat_rid, "lut", [lut_tex])
+		RenderingServer.canvas_item_set_material(ci_rid, mat_rid)
+
+		RenderingServer.viewport_set_update_mode(vp, RenderingServer.VIEWPORT_UPDATE_ONCE)
+		RenderingServer.force_draw(false)
+		var rendered = RenderingServer.texture_2d_get(RenderingServer.viewport_get_texture(vp))
+
+		RenderingServer.free_rid(vp)
+		RenderingServer.free_rid(canvas)
+		RenderingServer.free_rid(ci_rid)
+		RenderingServer.free_rid(mat_rid)
+
+		if rendered != null and not rendered.is_empty():
+			rendered.convert(Image.FORMAT_R8)
+			return rendered.get_data()
+
+		return PackedByteArray()
+
+	func _cpu_map(image: Image, colors: Array, has_transparency: bool) -> PackedByteArray:
+		var w := image.get_width()
+		var h := image.get_height()
+		var data: PackedByteArray = image.get_data()
+		var result: PackedByteArray = PackedByteArray()
+		result.resize(w * h)
+
+		var cache: Dictionary = {}
+		var colors_sz := colors.size()
+		var start_idx := 1 if has_transparency else 0
+		var out_idx := 0
+
+		for i in range(0, data.size(), 4):
+			if data[i + 3] == 0:
+				result[out_idx] = 0
+				out_idx += 1
+				continue
+
+			var r := int(data[i])
+			var g := int(data[i + 1])
+			var b := int(data[i + 2])
+			var key := (r << 16) | (g << 8) | b
+			var c_idx = cache.get(key, -1)
+			if c_idx != -1:
+				result[out_idx] = c_idx
+			else:
+				var best_idx := start_idx
+				var best_dist := 99999999
+				for ci in range(start_idx, colors_sz):
+					var dr: int = r - int(colors[ci][0])
+					var dg: int = g - int(colors[ci][1])
+					var db: int = b - int(colors[ci][2])
+					var dist: int = dr * dr + dg * dg + db * db
+					if dist < best_dist:
+						best_dist = dist
+						best_idx = ci
+						if dist <= 2:
+							break
+				cache[key] = best_idx
+				result[out_idx] = best_idx
+			out_idx += 1
+
+		return result
+
+
 func _cmd_export_gif(params: Dictionary) -> Dictionary:
 	var path: String = params.get("path", "")
 	if path.is_empty():
@@ -2625,25 +2952,44 @@ func _cmd_export_gif(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
+	var dir_name := path.get_base_dir()
+	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
+		DirAccess.make_dir_recursive_absolute(dir_name)
+
 	var GIFExporterClass = load("res://addons/gdgifexporter/exporter.gd")
-	var MedianCutQuant = load("res://addons/gdgifexporter/quantization/median_cut.gd")
+	if not GIFExporterClass:
+		return {"success": false, "error": "GIF exporter not supported in this build"}
 
-	if GIFExporterClass and MedianCutQuant:
-		var exporter = GIFExporterClass.new(int(project.size.x), int(project.size.y))
-		for i in range(project.frames.size()):
-			var frame_img = _blend_frame_layers(project, i)
-			var duration: float = project.frames[i].duration / maxf(0.1, float(project.fps))
-			exporter.add_frame(frame_img, duration, MedianCutQuant)
-		var file_data: PackedByteArray = exporter.export_file_data()
-		var fa = FileAccess.open(path, FileAccess.WRITE)
-		if fa:
-			fa.store_buffer(file_data)
-			fa.close()
-			return {"success": true, "data": {"path": path, "frames": project.frames.size(), "size_bytes": file_data.size()}}
-		else:
-			return {"success": false, "error": "Failed to open output path: %s" % path}
+	var exporter = GIFExporterClass.new(int(project.size.x), int(project.size.y))
+	var total_frames: int = project.frames.size()
 
-	return {"success": false, "error": "GIF exporter not supported in this build"}
+	for i in range(total_frames):
+		var frame_img = _blend_frame_layers(project, i)
+		var duration: float = project.frames[i].duration / maxf(0.1, float(project.fps))
+		var add_err = exporter.add_frame(frame_img, duration, SafeMedianCutQuant)
+		if add_err != 0:
+			push_warning(LOG_TAG + "Frame %d add returned status: %d" % [i, add_err])
+
+	var file_data: PackedByteArray = exporter.export_file_data()
+	if file_data.is_empty():
+		return {"success": false, "error": "Failed to generate GIF data"}
+
+	var fa = FileAccess.open(path, FileAccess.WRITE)
+	if fa:
+		fa.store_buffer(file_data)
+		fa.close()
+		return {
+			"success": true,
+			"data": {
+				"path": path,
+				"frames": total_frames,
+				"size_bytes": file_data.size(),
+				"width": int(project.size.x),
+				"height": int(project.size.y)
+			}
+		}
+	else:
+		return {"success": false, "error": "Failed to open output path: %s" % path}
 
 
 func _cmd_export_apng(params: Dictionary) -> Dictionary:
@@ -3228,10 +3574,16 @@ func _cmd_apply_drop_shadow(params: Dictionary) -> Dictionary:
 					shadow_img.set_pixel(sx, sy, shadow_col)
 					shadow_pixel_count += 1
 
+	var shadow_layer_idx: int = target.layer
 	if as_new_layer:
-		var target_idx := maxi(0, target.layer - 1)
-		_api.project.add_new_layer(target_idx, "Shadow", 0)
-		_api.project.set_pixelcel_image(shadow_img, target.frame, target_idx)
+		if target.layer > 0:
+			_api.project.add_new_layer(target.layer - 1, "Shadow", 0)
+			shadow_layer_idx = target.layer
+		else:
+			_api.project.add_new_layer(0, "Shadow", 0)
+			_cmd_reorder_layers({"from_index": 1, "to_index": 0})
+			shadow_layer_idx = 0
+		_api.project.set_pixelcel_image(shadow_img, target.frame, shadow_layer_idx)
 	else:
 		var final_img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
 		final_img.blit_rect(shadow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
@@ -3251,6 +3603,7 @@ func _cmd_apply_drop_shadow(params: Dictionary) -> Dictionary:
 			"shadow_pixels": shadow_pixel_count,
 			"offset": [offset_x, offset_y],
 			"as_new_layer": as_new_layer,
+			"shadow_layer_index": shadow_layer_idx,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -3265,6 +3618,7 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 	var radius: int = int(params.get("radius", 2))
 	var glow_hex: String = params.get("color", "#3498db")
 	var intensity: float = float(params.get("intensity", 0.6))
+	var as_new_layer: bool = bool(params.get("as_new_layer", false))
 
 	var glow_col := Color.html(glow_hex) if Color.html_is_valid(glow_hex) else Color(0.2, 0.6, 1.0, 1.0)
 	var img: Image = target.image
@@ -3288,10 +3642,28 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 								var new_a = maxf(cur.a, falloff)
 								glow_img.set_pixel(gx, gy, Color(glow_col.r, glow_col.g, glow_col.b, new_a))
 
-	var composite := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
-	composite.blend_rect(glow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
-	composite.blend_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
-	_commit_image_change(composite, "Apply Glow", target.frame, target.layer)
+	var glow_layer_idx: int = target.layer
+	if as_new_layer:
+		if target.layer > 0:
+			_api.project.add_new_layer(target.layer - 1, "Glow", 0)
+			glow_layer_idx = target.layer
+		else:
+			_api.project.add_new_layer(0, "Glow", 0)
+			_cmd_reorder_layers({"from_index": 1, "to_index": 0})
+			glow_layer_idx = 0
+		_api.project.set_pixelcel_image(glow_img, target.frame, glow_layer_idx)
+	else:
+		var composite := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+		composite.blend_rect(glow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
+		composite.blend_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
+		_commit_image_change(composite, "Apply Glow", target.frame, target.layer)
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
 
 	return {
 		"success": true,
@@ -3299,6 +3671,8 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 			"radius": radius,
 			"color": glow_hex,
 			"intensity": intensity,
+			"as_new_layer": as_new_layer,
+			"glow_layer_index": glow_layer_idx,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -3384,51 +3758,81 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 
 
 func _cmd_check_seamless_tile(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var img: Image = target.image
+	var w: int = img.get_width()
+	var h: int = img.get_height()
+
+	var tile_w: int = int(params.get("tile_width", 0))
+	var tile_h: int = int(params.get("tile_height", 0))
+	if tile_w <= 0 or tile_w > w:
+		tile_w = w
+	if tile_h <= 0 or tile_h > h:
+		tile_h = h
 
 	var fix_seams: bool = bool(params.get("fix_seams", false))
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
+	var dry_run: bool = bool(params.get("dry_run", false))
 
-	var w := img.get_width()
-	var h := img.get_height()
-	var x_mismatches := 0
-	var y_mismatches := 0
+	var cols: int = w / tile_w
+	var rows: int = h / tile_h
+	var x_mismatches: int = 0
+	var y_mismatches: int = 0
 
-	for y in range(h):
-		var left = img.get_pixel(0, y)
-		var right = img.get_pixel(w - 1, y)
-		if not left.is_equal_approx(right):
-			x_mismatches += 1
-			if fix_seams:
-				var avg = left.lerp(right, 0.5)
-				img.set_pixel(0, y, avg)
-				img.set_pixel(w - 1, y, avg)
+	for ty in range(rows):
+		for tx in range(cols):
+			var ox: int = tx * tile_w
+			var oy: int = ty * tile_h
 
-	for x in range(w):
-		var top = img.get_pixel(x, 0)
-		var bottom = img.get_pixel(x, h - 1)
-		if not top.is_equal_approx(bottom):
-			y_mismatches += 1
-			if fix_seams:
-				var avg = top.lerp(bottom, 0.5)
-				img.set_pixel(x, 0, avg)
-				img.set_pixel(x, h - 1, avg)
+			# Horizontal seams (left edge vs right edge of this tile)
+			for y in range(oy, oy + tile_h):
+				var left = img.get_pixel(ox, y)
+				var right = img.get_pixel(ox + tile_w - 1, y)
+				if not left.is_equal_approx(right):
+					x_mismatches += 1
+					if fix_seams and not dry_run:
+						var avg = left.lerp(right, 0.5)
+						img.set_pixel(ox, y, avg)
+						img.set_pixel(ox + tile_w - 1, y, avg)
 
-	if fix_seams:
-		_commit_image_change(img, "Fix Seamless Tile", project.current_frame, project.current_layer)
+			# Vertical seams (top edge vs bottom edge of this tile)
+			for x in range(ox, ox + tile_w):
+				var top = img.get_pixel(x, oy)
+				var bottom = img.get_pixel(x, oy + tile_h - 1)
+				if not top.is_equal_approx(bottom):
+					y_mismatches += 1
+					if fix_seams and not dry_run:
+						var avg = top.lerp(bottom, 0.5)
+						img.set_pixel(x, oy, avg)
+						img.set_pixel(x, oy + tile_h - 1, avg)
 
-	var is_seamless = (x_mismatches == 0 and y_mismatches == 0)
+	var is_seamless: bool = (x_mismatches == 0 and y_mismatches == 0)
+	var actually_fixed: bool = fix_seams and not dry_run and not is_seamless
+
+	if actually_fixed:
+		_commit_image_change(img, "Fix Seamless Tile", target.frame, target.layer)
+		var canvas = _api.general.get_canvas()
+		if canvas:
+			if "project_changed" in canvas:
+				canvas.project_changed = true
+			canvas.set("update_all_layers", true)
+			canvas.queue_redraw()
+
 	return {
 		"success": true,
 		"data": {
-			"is_seamless": is_seamless or fix_seams,
+			"is_seamless": is_seamless or actually_fixed,
 			"horizontal_seam_errors": x_mismatches,
 			"vertical_seam_errors": y_mismatches,
-			"seams_fixed": fix_seams
+			"tiles_checked": cols * rows,
+			"tile_width": tile_w,
+			"tile_height": tile_h,
+			"seams_fixed": actually_fixed,
+			"dry_run": dry_run,
+			"frame": target.frame,
+			"layer": target.layer
 		}
 	}
 
@@ -3807,4 +4211,246 @@ func _get_bitmap_glyph(ch: String) -> Array:
 		"-": return [[0,0,0],[0,0,0],[1,1,1],[0,0,0],[0,0,0]]
 		"+": return [[0,1,0],[0,1,0],[1,1,1],[0,1,0],[0,1,0]]
 		_: return [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]]
+
+
+func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var all_layers: bool = bool(params.get("all_layers", false))
+	var frame_idx: int = int(params.get("frame", project.current_frame))
+	var check_holes: bool = bool(params.get("check_holes", true))
+	var check_orphans: bool = bool(params.get("check_orphans", true))
+	var orphan_distance: int = int(params.get("orphan_distance", 1))
+
+	var img: Image = null
+	var target_layer: int = project.current_layer
+	if all_layers:
+		img = _composite_frame_layers(project, frame_idx)
+	else:
+		var target := _get_target_cel_and_image(params)
+		if target.error != "":
+			return {"success": false, "error": target.error}
+		img = target.image
+		target_layer = target.layer
+
+	if img == null:
+		return {"success": false, "error": "No active image to validate"}
+
+	var w: int = img.get_width()
+	var h: int = img.get_height()
+	var used_rect := img.get_used_rect()
+
+	if used_rect.size.x == 0 or used_rect.size.y == 0:
+		return {
+			"success": true,
+			"data": {
+				"empty": true,
+				"total_opaque_pixels": 0,
+				"unique_color_count": 0,
+				"unique_colors": [],
+				"bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
+				"canvas_size": {"width": w, "height": h},
+				"stray_pixels": [],
+				"stray_pixel_count": 0,
+				"enclosed_holes": [],
+				"enclosed_hole_count": 0,
+				"frame": frame_idx,
+				"layer": target_layer
+			}
+		}
+
+	# 1. Color counting & non-transparent pixel map
+	var color_map := {}
+	var total_opaque := 0
+	for y in range(h):
+		for x in range(w):
+			var c := img.get_pixel(x, y)
+			if c.a > 0.05:
+				total_opaque += 1
+				var hex := "#" + c.to_html(c.a < 0.99)
+				color_map[hex] = color_map.get(hex, 0) + 1
+
+	# 2. Stray / orphan pixels detection
+	var stray_pixels: Array = []
+	if check_orphans:
+		var dist := maxi(1, orphan_distance)
+		for y in range(used_rect.position.y, used_rect.end.y):
+			for x in range(used_rect.position.x, used_rect.end.x):
+				if img.get_pixel(x, y).a > 0.05:
+					var has_neighbor := false
+					for dy in range(-dist, dist + 1):
+						for dx in range(-dist, dist + 1):
+							if dx == 0 and dy == 0:
+								continue
+							var nx := x + dx
+							var ny := y + dy
+							if nx >= 0 and nx < w and ny >= 0 and ny < h:
+								if img.get_pixel(nx, ny).a > 0.05:
+									has_neighbor = true
+									break
+						if has_neighbor:
+							break
+					if not has_neighbor:
+						var c := img.get_pixel(x, y)
+						stray_pixels.append({
+							"x": x,
+							"y": y,
+							"color": "#" + c.to_html(c.a < 0.99)
+						})
+
+	# 3. Enclosed holes detection via exterior flood fill
+	var enclosed_holes: Array = []
+	if check_holes:
+		var outside: Array = []
+		outside.resize(w * h)
+		outside.fill(false)
+
+		var queue: Array = []
+
+		for x in range(w):
+			if img.get_pixel(x, 0).a <= 0.05:
+				outside[x] = true
+				queue.append(Vector2i(x, 0))
+			var b_idx := (h - 1) * w + x
+			if img.get_pixel(x, h - 1).a <= 0.05 and not outside[b_idx]:
+				outside[b_idx] = true
+				queue.append(Vector2i(x, h - 1))
+
+		for y in range(h):
+			var l_idx := y * w
+			if img.get_pixel(0, y).a <= 0.05 and not outside[l_idx]:
+				outside[l_idx] = true
+				queue.append(Vector2i(0, y))
+			var r_idx := y * w + (w - 1)
+			if img.get_pixel(w - 1, y).a <= 0.05 and not outside[r_idx]:
+				outside[r_idx] = true
+				queue.append(Vector2i(w - 1, y))
+
+		while queue.size() > 0:
+			var p: Vector2i = queue.pop_back()
+			var neighbors = [
+				Vector2i(p.x + 1, p.y),
+				Vector2i(p.x - 1, p.y),
+				Vector2i(p.x, p.y + 1),
+				Vector2i(p.x, p.y - 1)
+			]
+			for np in neighbors:
+				if np.x >= 0 and np.x < w and np.y >= 0 and np.y < h:
+					var n_idx: int = np.y * w + np.x
+					if not outside[n_idx] and img.get_pixel(np.x, np.y).a <= 0.05:
+						outside[n_idx] = true
+						queue.append(np)
+
+		var visited_hole: Array = []
+		visited_hole.resize(w * h)
+		visited_hole.fill(false)
+
+		for y in range(used_rect.position.y, used_rect.end.y):
+			for x in range(used_rect.position.x, used_rect.end.x):
+				var idx: int = y * w + x
+				if not outside[idx] and not visited_hole[idx] and img.get_pixel(x, y).a <= 0.05:
+					var hole_queue := [Vector2i(x, y)]
+					visited_hole[idx] = true
+					var hole_pixel_count := 0
+					var min_x := x
+					var max_x := x
+					var min_y := y
+					var max_y := y
+
+					while hole_queue.size() > 0:
+						var hp: Vector2i = hole_queue.pop_back()
+						hole_pixel_count += 1
+						min_x = mini(min_x, hp.x)
+						max_x = maxi(max_x, hp.x)
+						min_y = mini(min_y, hp.y)
+						max_y = maxi(max_y, hp.y)
+
+						var h_neighbors = [
+							Vector2i(hp.x + 1, hp.y),
+							Vector2i(hp.x - 1, hp.y),
+							Vector2i(hp.x, hp.y + 1),
+							Vector2i(hp.x, hp.y - 1)
+						]
+						for nhp in h_neighbors:
+							if nhp.x >= 0 and nhp.x < w and nhp.y >= 0 and nhp.y < h:
+								var h_idx: int = nhp.y * w + nhp.x
+								if not outside[h_idx] and not visited_hole[h_idx] and img.get_pixel(nhp.x, nhp.y).a <= 0.05:
+									visited_hole[h_idx] = true
+									hole_queue.append(nhp)
+
+					enclosed_holes.append({
+						"pixel_count": hole_pixel_count,
+						"bounds": {
+							"x": min_x,
+							"y": min_y,
+							"width": max_x - min_x + 1,
+							"height": max_y - min_y + 1
+						},
+						"center": [int((min_x + max_x) / 2.0), int((min_y + max_y) / 2.0)]
+					})
+
+	return {
+		"success": true,
+		"data": {
+			"empty": false,
+			"total_opaque_pixels": total_opaque,
+			"unique_color_count": color_map.size(),
+			"unique_colors": color_map.keys(),
+			"bounds": {
+				"x": used_rect.position.x,
+				"y": used_rect.position.y,
+				"width": used_rect.size.x,
+				"height": used_rect.size.y
+			},
+			"canvas_size": {"width": w, "height": h},
+			"stray_pixels": stray_pixels.slice(0, 50),
+			"stray_pixel_count": stray_pixels.size(),
+			"enclosed_holes": enclosed_holes,
+			"enclosed_hole_count": enclosed_holes.size(),
+			"frame": frame_idx,
+			"layer": target_layer
+		}
+	}
+
+
+func _cmd_get_history(params: Dictionary) -> Dictionary:
+	var ur = _get_undo_redo()
+	if ur == null:
+		return {"success": false, "error": "UndoRedo system not available"}
+
+	var limit: int = int(params.get("limit", 20))
+	if limit <= 0:
+		limit = 20
+
+	var total_count: int = ur.get_history_count()
+	var current_idx: int = ur.get_current_action()
+	var current_name: String = ur.get_current_action_name() if total_count > 0 and current_idx >= 0 else ""
+
+	var actions: Array = []
+	var start_idx: int = maxi(0, total_count - limit)
+	for i in range(start_idx, total_count):
+		actions.append({
+			"index": i,
+			"name": ur.get_action_name(i),
+			"is_current": (i == current_idx)
+		})
+
+	var project = _api.project.current_project
+	var cursor_info := _get_active_cursor_info(project) if project else {}
+
+	return {
+		"success": true,
+		"data": {
+			"current_action_index": current_idx,
+			"current_action_name": current_name,
+			"history_count": total_count,
+			"can_undo": ur.has_undo(),
+			"can_redo": ur.has_redo(),
+			"actions": actions,
+			"active_cursor": cursor_info
+		}
+	}
+
 

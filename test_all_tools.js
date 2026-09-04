@@ -94,6 +94,8 @@ async function run() {
   await test("rename_canvas", { name: "TestCanvasRenamed" });
   await test("set_color", { color: "#ff5500", button: 0 });
   await test("get_color", {});
+  await test("list_palettes", {});
+  await test("switch_palette", { name: "Default" });
   await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true, colors: ["#ff0000", "#00ff00", "#0000ff", "#ffffff"] });
   await test("add_palette_color", { colors: ["#ffff00", "#ff00ff", "#00ffff"] });
   await test("set_palette_color", { index: 0, color: "#ff0088" });
@@ -101,6 +103,7 @@ async function run() {
   await test("get_palette_usage", { all_layers: true });
   await test("clean_isolated_pixels", {});
   await test("remap_to_palette", { palette_colors: ["#000000", "#ffffff", "#ff5500", "#00ff88"] });
+  await test("delete_palette", { name: "FullTestPal" });
 
   // 3. Drawing Primitives & Batching
   await test("draw_pixel", { x: 10, y: 10, color: "#ffffff" });
@@ -148,6 +151,7 @@ async function run() {
   await test("describe_canvas", {});
   await test("suggest_palette", { theme: "retro", list_all: false });
   await test("generate_sprite", { description: "red potion bottle", width: 16, height: 16, style: "pico8" });
+  await test("validate_sprite", { check_holes: true, check_orphans: true });
 
   // 6. Color manipulation & Procedural Art
   await test("color_replace", { old_color: "#e74c3c", new_color: "#e67e22", tolerance: 0.1 });
@@ -156,14 +160,15 @@ async function run() {
   await test("apply_dithering", { x: 0, y: 0, width: 8, height: 8, color1: "#e74c3c", color2: "#3498db" });
   await test("apply_outline", { color: "#000000", thickness: 1, inside: false });
   await test("apply_drop_shadow", { offset_x: 2, offset_y: 2, color: "#000000", opacity: 0.5, as_new_layer: false });
-  await test("apply_glow", { radius: 2, color: "#3498db", intensity: 0.7 });
+  await test("apply_glow", { radius: 2, color: "#3498db", intensity: 0.7, as_new_layer: true });
   await test("apply_gradient", { x1: 0, y1: 0, x2: 32, y2: 32, color1: "#ff0000", color2: "#0000ff", dither: true, type: "linear" });
-  await test("check_seamless_tile", { fix_seams: true });
+  await test("check_seamless_tile", { tile_width: 32, tile_height: 32, dry_run: true, fix_seams: false });
   await test("mirror_layer", { axis: "horizontal", mode: "mirror_left_to_right" });
 
-  // 7. Undo / Redo
+  // 7. Undo / Redo & History Stack
   await test("undo", {});
   await test("redo", {});
+  await test("get_history", { limit: 10 });
 
   // 8. Cel Transformations
   await test("transform_cel", { dx: 2, dy: 2 });

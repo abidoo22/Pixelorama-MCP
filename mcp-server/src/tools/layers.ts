@@ -30,13 +30,17 @@ export function registerLayerTools(server: McpServer): void {
       if (above_layer !== undefined) params.above_layer = above_layer;
 
       const result = await sendCommand("add_layer", params);
+      let text = result.success
+        ? `✅ Layer added${name ? `: "${name}"` : ""} at index [${result.data?.layer_index ?? result.data?.index}] (type: ${["Pixel", "Group", "3D"][type]}, total: ${result.data?.total_layers})`
+        : `❌ ${result.error}`;
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Layer added${name ? `: "${name}"` : ""} (type: ${["Pixel", "Group", "3D"][type]})`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };
@@ -90,11 +94,15 @@ export function registerLayerTools(server: McpServer): void {
     },
     async ({ index }) => {
       const result = await sendCommand("delete_layer", { index });
+      let text = result.success ? `✅ Layer ${index} deleted` : `❌ ${result.error}`;
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success ? `✅ Layer ${index} deleted` : `❌ ${result.error}`,
+            text,
           },
         ],
       };
@@ -192,13 +200,17 @@ export function registerLayerTools(server: McpServer): void {
     },
     async ({ from_index, to_index }) => {
       const result = await sendCommand("reorder_layers", { from_index, to_index });
+      let text = result.success
+        ? `✅ Layer moved from index ${from_index} to ${to_index}`
+        : `❌ ${result.error}`;
+      if (result.data?.active_cursor) {
+        text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
+      }
       return {
         content: [
           {
             type: "text" as const,
-            text: result.success
-              ? `✅ Layer moved from index ${from_index} to ${to_index}`
-              : `❌ ${result.error}`,
+            text,
           },
         ],
       };
