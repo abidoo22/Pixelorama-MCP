@@ -173,12 +173,14 @@ export function registerColorTools(server: McpServer): void {
     },
     async ({ name, width, height, is_global, colors }) => {
       const result = await sendCommand("create_palette", { name, width, height, is_global, colors });
+      const finalW = result.data?.width ?? width;
+      const finalH = result.data?.height ?? height;
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Palette "${name}" created (${width}x${height})${result.data?.colors_added ? ` with ${result.data.colors_added} colors` : ""}`
+              ? `✅ Palette "${name}" created (${finalW}x${finalH})${result.data?.colors_added ? ` with ${result.data.colors_added} colors` : ""}`
               : `❌ ${result.error}`,
           },
         ],
@@ -225,6 +227,87 @@ export function registerColorTools(server: McpServer): void {
           },
         ],
       };
+    }
+  );
+
+  server.tool(
+    "list_palettes",
+    "List all available palettes in Pixelorama (both global and project palettes), including dimensions, color count, and which one is active.",
+    {},
+    async () => {
+      const result = await sendCommand("list_palettes", {});
+      if (result.success && result.data) {
+        const d = result.data;
+        const palettes = (d.palettes || []) as Array<{
+          name: string;
+          width: number;
+          height: number;
+          colors_count: number;
+          is_global: boolean;
+          is_active: boolean;
+        }>;
+        if (palettes.length === 0) {
+          return { content: [{ type: "text" as const, text: "No palettes found." }] };
+        }
+        const lines = palettes.map(
+          (p) =>
+            `• ${p.is_active ? "⭐ [ACTIVE] " : ""}${p.name} (${p.width}x${p.height}, ${p.colors_count} colors, ${p.is_global ? "global" : "project"})`
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Palettes (${palettes.length} total, active: "${d.active_palette}"):\n${lines.join("\n")}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "switch_palette",
+    "Switch the active palette in Pixelorama by name.",
+    {
+      name: z.string().describe("The name of the palette to switch to"),
+    },
+    async ({ name }) => {
+      const result = await sendCommand("switch_palette", { name });
+      if (result.success && result.data) {
+        const d = result.data;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Switched to palette "${d.name}" (${d.width}x${d.height}, ${d.colors_count} colors, ${d.is_global ? "global" : "project"})`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  server.tool(
+    "delete_palette",
+    "Delete a palette by name from Pixelorama.",
+    {
+      name: z.string().describe("The name of the palette to delete"),
+    },
+    async ({ name }) => {
+      const result = await sendCommand("delete_palette", { name });
+      if (result.success && result.data) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ ${result.data.message || `Palette "${name}" deleted`}`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
     }
   );
 

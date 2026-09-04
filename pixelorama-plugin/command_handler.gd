@@ -83,6 +83,9 @@ func _register_tools() -> void:
 	_tool_registry["create_palette"] = Callable(self, "_cmd_create_palette")
 	_tool_registry["add_palette_color"] = Callable(self, "_cmd_add_palette_color")
 	_tool_registry["set_palette_color"] = Callable(self, "_cmd_set_palette_color")
+	_tool_registry["list_palettes"] = Callable(self, "_cmd_list_palettes")
+	_tool_registry["switch_palette"] = Callable(self, "_cmd_switch_palette")
+	_tool_registry["delete_palette"] = Callable(self, "_cmd_delete_palette")
 
 	# Layers
 	_tool_registry["add_layer"] = Callable(self, "_cmd_add_layer")
@@ -158,7 +161,7 @@ func _get_current_image() -> Image:
 	var cel = _get_current_cel()
 	if cel == null or cel.get_class_name() != "PixelCel":
 		return null
-	return cel.get_image()
+	return cel.get_image().duplicate()
 
 
 func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
@@ -178,10 +181,10 @@ func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
 	if cel == null or cel.get_class_name() != "PixelCel":
 		return {"error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [frame_idx, layer_idx], "image": null, "frame": frame_idx, "layer": layer_idx}
 
-	return {"error": "", "image": cel.get_image(), "frame": frame_idx, "layer": layer_idx, "cel": cel}
+	return {"error": "", "image": cel.get_image().duplicate(), "frame": frame_idx, "layer": layer_idx, "cel": cel}
 
 
-func _commit_image_change(image: Image, _action_name: String, frame_idx: int = -1, layer_idx: int = -1) -> void:
+func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1) -> void:
 	## Commits the modified image through Pixelorama's undo system.
 	## This ensures every AI action is undoable by the user.
 	var project = _api.project.current_project
@@ -193,19 +196,62 @@ func _commit_image_change(image: Image, _action_name: String, frame_idx: int = -
 	if layer_idx < 0:
 		layer_idx = project.current_layer
 
-	# 1. Duplicate the image to force a new object reference in Godot,
-	# which ensures Pixelorama's caches detect the change and update the canvas.
-	var dup_image := image.duplicate()
-	_api.project.set_pixelcel_image(
-		dup_image,
-		frame_idx,
-		layer_idx
-	)
+	if frame_idx < 0 or frame_idx >= project.frames.size():
+		return
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return
 
-	# 2. Programmatically select the current cel to trigger a switch/refresh signal
+	var cel = project.frames[frame_idx].cels[layer_idx]
+	if cel == null or cel.get_class_name() != "PixelCel":
+		return
+
+	var cel_image: Image = cel.get_image()
+	image.convert(project.get_image_format())
+
+	var ur = project.undo_redo
+	if ur:
+		ur.create_action(action_name)
+		var undo_data := {}
+		if cel.has_method("serialize_undo_data"):
+			undo_data[cel] = cel.serialize_undo_data()
+		cel_image.add_data_to_dictionary(undo_data)
+
+		cel_image.fill(0)
+		cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+		if cel_image.has_method("convert_rgb_to_indexed"):
+			cel_image.convert_rgb_to_indexed()
+
+		var redo_data := {}
+		if cel.has_method("update_tilemap"):
+			cel.update_tilemap()
+		if cel.has_method("serialize_undo_data"):
+			redo_data[cel] = cel.serialize_undo_data()
+		cel_image.add_data_to_dictionary(redo_data)
+
+		project.deserialize_cel_undo_data(redo_data, undo_data)
+		ur.add_do_property(project, "selected_cels", [])
+		ur.add_do_method(project.change_cel.bind(frame_idx, layer_idx))
+		var global_node = _api.get_node_or_null("/root/Global")
+		if global_node and global_node.has_method("undo_or_redo"):
+			ur.add_do_method(global_node.undo_or_redo.bind(false, frame_idx, layer_idx, project))
+
+		ur.add_undo_property(project, "selected_cels", [])
+		ur.add_undo_method(project.change_cel.bind(frame_idx, layer_idx))
+		if cel.has_method("update_texture"):
+			ur.add_do_method(cel.update_texture)
+			ur.add_undo_method(cel.update_texture)
+		if global_node and global_node.has_method("undo_or_redo"):
+			ur.add_undo_method(global_node.undo_or_redo.bind(true, frame_idx, layer_idx, project))
+		ur.commit_action()
+	else:
+		# Fallback if undo_redo not available
+		cel_image.fill(0)
+		cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+
+	# Select the current cel to trigger a switch/refresh signal
 	_api.project.select_cels([[frame_idx, layer_idx]])
 
-	# 3. Request redraw on the main canvas (necessary in Pixelorama v1.1.9+ as it doesn't continuously redraw when idle)
+	# Request redraw on the main canvas
 	var canvas = _api.general.get_canvas()
 	if canvas:
 		canvas.queue_redraw()
@@ -804,6 +850,8 @@ func _cmd_undo(_params: Dictionary) -> Dictionary:
 					canvas.project_changed = true
 				canvas.set("update_all_layers", true)
 				canvas.queue_redraw()
+				if canvas.has_method("update_texture") and project:
+					canvas.update_texture(project.current_layer)
 
 			var layer_name := ""
 			var layer_idx := -1
@@ -844,6 +892,8 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 					canvas.project_changed = true
 				canvas.set("update_all_layers", true)
 				canvas.queue_redraw()
+				if canvas.has_method("update_texture") and project:
+					canvas.update_texture(project.current_layer)
 
 			var layer_name := ""
 			var layer_idx := -1
@@ -2225,14 +2275,21 @@ func _cmd_get_palette_colors(_params: Dictionary) -> Dictionary:
 
 func _cmd_create_palette(params: Dictionary) -> Dictionary:
 	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
 	var name: String = params.get("name", "New Palette")
 	var width: int = int(params.get("width", 8))
 	var height: int = int(params.get("height", 8))
 	var is_global: bool = bool(params.get("is_global", true))
 
+	if width <= 0:
+		width = 8
+	if height <= 0:
+		height = 8
+
 	var colors_arr: Array = params.get("colors", [])
 	if colors_arr.size() > (width * height):
-		width = mini(32, maxi(8, int(ceil(sqrt(colors_arr.size())))))
 		height = int(ceil(float(colors_arr.size()) / float(width)))
 
 	palettes_autoload.create_new_palette(0, name, "", width, height, false, 0, is_global)
@@ -2247,11 +2304,33 @@ func _cmd_create_palette(params: Dictionary) -> Dictionary:
 					added += 1
 		palettes_autoload.save_palette()
 
-	return {"success": true, "data": {"name": name, "width": width, "height": height, "is_global": is_global, "colors_added": added}}
+	if current_palette:
+		palettes_autoload.select_palette(current_palette.name)
+		if palettes_autoload.has_signal("new_palette_created"):
+			palettes_autoload.new_palette_created.emit()
+		var global_node = _api.get_node_or_null("/root/Global")
+		if global_node and global_node.has_signal("palette_panel_updated"):
+			global_node.palette_panel_updated.emit()
+
+	var actual_w: int = int(current_palette.width) if current_palette else width
+	var actual_h: int = int(current_palette.height) if current_palette else height
+	return {
+		"success": true,
+		"data": {
+			"name": name,
+			"width": actual_w,
+			"height": actual_h,
+			"is_global": is_global,
+			"colors_added": added
+		}
+	}
 
 
 func _cmd_add_palette_color(params: Dictionary) -> Dictionary:
 	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
 	var current_palette = palettes_autoload.current_palette
 	if current_palette == null:
 		return {"success": false, "error": "No active palette"}
@@ -2264,6 +2343,16 @@ func _cmd_add_palette_color(params: Dictionary) -> Dictionary:
 	if colors_arr.is_empty():
 		return {"success": false, "error": "Missing 'color' or 'colors' parameter"}
 
+	if current_palette.is_full():
+		return {
+			"success": false,
+			"error": "Palette '%s' is full (%d/%d swatches used)" % [
+				current_palette.name,
+				current_palette.colors.size(),
+				current_palette.width * current_palette.height
+			]
+		}
+
 	var added := 0
 	for c_val in colors_arr:
 		if c_val is String and Color.html_is_valid(c_val):
@@ -2271,12 +2360,23 @@ func _cmd_add_palette_color(params: Dictionary) -> Dictionary:
 				current_palette.add_color(Color.html(c_val))
 				added += 1
 
+	if added == 0:
+		return {"success": false, "error": "No valid colors were added to palette '%s'" % current_palette.name}
+
 	palettes_autoload.save_palette()
+
+	var global_node = _api.get_node_or_null("/root/Global")
+	if global_node and global_node.has_signal("palette_panel_updated"):
+		global_node.palette_panel_updated.emit()
+
 	return {"success": true, "data": {"colors_added": added, "palette_name": current_palette.name}}
 
 
 func _cmd_set_palette_color(params: Dictionary) -> Dictionary:
 	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
 	var current_palette = palettes_autoload.current_palette
 	if current_palette == null:
 		return {"success": false, "error": "No active palette"}
@@ -2288,7 +2388,126 @@ func _cmd_set_palette_color(params: Dictionary) -> Dictionary:
 	var color := _parse_color(params)
 	current_palette.set_color(index, color)
 	palettes_autoload.save_palette()
+
+	var global_node = _api.get_node_or_null("/root/Global")
+	if global_node and global_node.has_signal("palette_panel_updated"):
+		global_node.palette_panel_updated.emit()
+
 	return {"success": true, "data": {"index": index, "color": color.to_html()}}
+
+
+func _cmd_list_palettes(_params: Dictionary) -> Dictionary:
+	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
+	var project = _api.project.current_project
+	var active_name: String = palettes_autoload.current_palette.name if palettes_autoload.current_palette else ""
+	var pal_list: Array = []
+
+	# Global palettes
+	if "palettes" in palettes_autoload and palettes_autoload.palettes is Dictionary:
+		for pal_name in palettes_autoload.palettes.keys():
+			var pal = palettes_autoload.palettes[pal_name]
+			if pal:
+				pal_list.append({
+					"name": pal.name,
+					"width": pal.width,
+					"height": pal.height,
+					"colors_count": pal.colors.size(),
+					"is_global": true,
+					"is_active": (pal.name == active_name)
+				})
+
+	# Project palettes
+	if project and "palettes" in project and project.palettes is Dictionary:
+		for pal_name in project.palettes.keys():
+			var pal = project.palettes[pal_name]
+			if pal:
+				pal_list.append({
+					"name": pal.name,
+					"width": pal.width,
+					"height": pal.height,
+					"colors_count": pal.colors.size(),
+					"is_global": false,
+					"is_active": (pal.name == active_name)
+				})
+
+	return {
+		"success": true,
+		"data": {
+			"palettes": pal_list,
+			"active_palette": active_name,
+			"total": pal_list.size()
+		}
+	}
+
+
+func _cmd_switch_palette(params: Dictionary) -> Dictionary:
+	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
+	var name: String = params.get("name", "")
+	if name.is_empty():
+		return {"success": false, "error": "Missing 'name' parameter"}
+
+	palettes_autoload.select_palette(name)
+	var current = palettes_autoload.current_palette
+	if current == null or current.name != name:
+		return {"success": false, "error": "Palette '%s' not found" % name}
+
+	var global_node = _api.get_node_or_null("/root/Global")
+	if global_node and global_node.has_signal("palette_panel_updated"):
+		global_node.palette_panel_updated.emit()
+
+	return {
+		"success": true,
+		"data": {
+			"name": current.name,
+			"width": current.width,
+			"height": current.height,
+			"colors_count": current.colors.size(),
+			"is_global": not current.is_project_palette if "is_project_palette" in current else true
+		}
+	}
+
+
+func _cmd_delete_palette(params: Dictionary) -> Dictionary:
+	var palettes_autoload = _api.palette.autoload()
+	if palettes_autoload == null:
+		return {"success": false, "error": "Palettes singleton not available"}
+
+	var name: String = params.get("name", "")
+	if name.is_empty():
+		return {"success": false, "error": "Missing 'name' parameter"}
+
+	var target_palette = null
+	if "palettes" in palettes_autoload and palettes_autoload.palettes is Dictionary and palettes_autoload.palettes.has(name):
+		target_palette = palettes_autoload.palettes[name]
+	else:
+		var project = _api.project.current_project
+		if project and "palettes" in project and project.palettes is Dictionary and project.palettes.has(name):
+			target_palette = project.palettes[name]
+
+	if target_palette == null:
+		return {"success": false, "error": "Palette '%s' not found" % name}
+
+	palettes_autoload.palette_delete_and_reselect(true, target_palette)
+	var new_active: String = palettes_autoload.current_palette.name if palettes_autoload.current_palette else ""
+
+	var global_node = _api.get_node_or_null("/root/Global")
+	if global_node and global_node.has_signal("palette_panel_updated"):
+		global_node.palette_panel_updated.emit()
+
+	return {
+		"success": true,
+		"data": {
+			"deleted": name,
+			"active_palette": new_active,
+			"message": "Palette '%s' deleted. Active palette is now '%s'" % [name, new_active]
+		}
+	}
 
 
 # ==============================================================================
