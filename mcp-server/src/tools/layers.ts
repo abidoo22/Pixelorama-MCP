@@ -12,7 +12,7 @@ import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 export function registerLayerTools(server: McpServer): void {
   server.tool(
     "add_layer",
-    "Add a new layer to the current project. Layers are counted bottom to top (0 is the bottom-most layer).",
+    "Add a new layer to the current project. Layers are counted bottom to top (0 is the bottom-most layer). Omitting above_layer stacks on top of the canvas.",
     {
       name: z
         .string()
@@ -23,15 +23,16 @@ export function registerLayerTools(server: McpServer): void {
         .describe("Layer type: 0 = Pixel, 1 = Group, 2 = 3D"),
       above_layer: coerceInt(0)
         .optional()
-        .describe("Insert above this layer index (defaults to current layer)"),
+        .describe("Insert above this layer index (defaults to top of layer stack)"),
     },
     async ({ name, type, above_layer }) => {
       const params: Record<string, unknown> = { name, type };
       if (above_layer !== undefined) params.above_layer = above_layer;
 
       const result = await sendCommand("add_layer", params);
+      const totalLayers = result.data?.total_layers ?? result.data?.remaining_layers ?? 1;
       let text = result.success
-        ? `✅ Layer added${name ? `: "${name}"` : ""} at index [${result.data?.layer_index ?? result.data?.index}] (type: ${["Pixel", "Group", "3D"][type]}, total: ${result.data?.total_layers})`
+        ? `✅ Layer added${name ? `: "${name}"` : ""} at index [${result.data?.layer_index ?? result.data?.index}] (type: ${["Pixel", "Group", "3D"][type]}, total: ${totalLayers})`
         : `❌ ${result.error}`;
       if (result.data?.active_cursor) {
         text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
@@ -66,14 +67,15 @@ export function registerLayerTools(server: McpServer): void {
         const layerList = layers
           .map(
             (l) =>
-              `  [${l.index}] ${l.name} (${l.type}) ${l.visible ? "👁" : "🚫"} Opacity:${Math.round(l.opacity * 100)}% BlendMode:${l.blend_mode}`
+              `  [${l.index}] ${l.name} (${l.type ?? "Pixel"}) ${l.visible ? "👁" : "🚫"} Opacity:${Math.round(l.opacity * 100)}% BlendMode:${l.blend_mode}`
           )
           .join("\n");
+        const totalLayers = result.data.total_layers ?? layers.length;
         return {
           content: [
             {
               type: "text" as const,
-              text: `Layers (current: ${result.data.current_layer}):\n${layerList}`,
+              text: `Layers (current: ${result.data.current_layer}, total: ${totalLayers}):\n${layerList}`,
             },
           ],
         };
@@ -219,7 +221,7 @@ export function registerLayerTools(server: McpServer): void {
 
   server.tool(
     "duplicate_layer",
-    "Duplicate an entire layer and all of its pixel cels across every frame in the project.",
+    "Duplicate an entire layer and all of its pixel cels across every frame in the project. The duplicate is inserted immediately above the source layer at index + 1, shifting subsequent layers upward.",
     {
       index: coerceInt(0).optional().describe("Layer index to duplicate (defaults to active layer)"),
     },

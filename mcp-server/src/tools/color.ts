@@ -77,15 +77,18 @@ export function registerColorTools(server: McpServer): void {
     "Replace all pixels of old_color with new_color on the target cel. Invaluable for palette swapping, elemental variants (fire/ice armor), shiny monsters, and skin tone adjustments.",
     {
       old_color: z.string().describe("Hex color to be replaced (e.g. '#e74c3c')"),
-      new_color: z.string().describe("New hex color to replace with (e.g. '#3498db')"),
+      new_color: z.string().describe("New hex color to replace with (e.g. '#3498db' or '#00000000' for transparency)"),
       tolerance: coerceFloat(0, 1)
         .default(0.05)
         .describe("Color distance tolerance (0.0 = exact match, 0.1 = includes near shades)"),
+      preserve_alpha: coerceBool()
+        .default(false)
+        .describe("If true, retains each target pixel's existing alpha channel instead of replacing with new_color's alpha (defaults to false)"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ old_color, new_color, tolerance, layer, frame }) => {
-      const result = await sendCommand("color_replace", { old_color, new_color, tolerance, layer, frame });
+    async ({ old_color, new_color, tolerance, preserve_alpha, layer, frame }) => {
+      const result = await sendCommand("color_replace", { old_color, new_color, tolerance, preserve_alpha, layer, frame });
       if (result.success && result.data) {
         return {
           content: [

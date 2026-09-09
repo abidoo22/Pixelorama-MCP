@@ -26,6 +26,7 @@ export function registerVisionTools(server: McpServer): void {
 
       if (result.success && result.data && typeof result.data.base64 === "string") {
         const d = result.data;
+        const byteSize = Math.round(((d.base64 as string).length * 3) / 4);
         return {
           content: [
             {
@@ -35,7 +36,7 @@ export function registerVisionTools(server: McpServer): void {
             },
             {
               type: "text" as const,
-              text: `Canvas visual snapshot (${d.width}×${d.height} px, frame ${d.frame}). Inspect your artwork and refine as needed.`,
+              text: `🖼️ Canvas visual snapshot captured (${d.width}×${d.height} px, frame ${d.frame}, ~${Math.round(byteSize / 1024)} KB PNG). (Note: If your harness is text-only, use 'get_canvas_snapshot' or 'describe_canvas' for ASCII/hex grid inspection.)`,
             },
           ],
         };

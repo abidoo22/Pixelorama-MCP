@@ -20,7 +20,20 @@ export function registerDrawingTools(server: McpServer): void {
       const result = await sendCommand("undo", {});
       if (result.success && result.data) {
         const d = result.data;
-        const info = `↩️ ${d.message ?? "Undone action"} [action: "${d.action}", layer: ${d.layer_index} ("${d.layer_name}"), frame: ${d.frame}] (history: ${d.has_undo ? "more undo available" : "start of history"})`;
+        const layerIdx =
+          d.layer_index ??
+          d.active_layer_index ??
+          d.target_layer_index ??
+          d.active_cursor?.layer ??
+          0;
+        const layerName =
+          d.layer_name ??
+          d.active_layer_name ??
+          d.target_layer ??
+          d.active_cursor?.layer_name ??
+          "Layer";
+        const frameIdx = d.frame ?? d.active_cursor?.frame ?? 0;
+        const info = `↩️ ${d.message ?? "Undone action"} [action: "${d.action}", layer: ${layerIdx} ("${layerName}"), frame: ${frameIdx}] (history: ${d.has_undo ? "more undo available" : "start of history"})`;
         return { content: [{ type: "text" as const, text: info }] };
       }
       return {
@@ -45,7 +58,20 @@ export function registerDrawingTools(server: McpServer): void {
       const result = await sendCommand("redo", {});
       if (result.success && result.data) {
         const d = result.data;
-        const info = `↪️ ${d.message ?? "Redone action"} [action: "${d.action}", layer: ${d.layer_index} ("${d.layer_name}"), frame: ${d.frame}] (history: ${d.has_redo ? "more redo available" : "latest action"})`;
+        const layerIdx =
+          d.layer_index ??
+          d.active_layer_index ??
+          d.target_layer_index ??
+          d.active_cursor?.layer ??
+          0;
+        const layerName =
+          d.layer_name ??
+          d.active_layer_name ??
+          d.target_layer ??
+          d.active_cursor?.layer_name ??
+          "Layer";
+        const frameIdx = d.frame ?? d.active_cursor?.frame ?? 0;
+        const info = `↪️ ${d.message ?? "Redone action"} [action: "${d.action}", layer: ${layerIdx} ("${layerName}"), frame: ${frameIdx}] (history: ${d.has_redo ? "more redo available" : "latest action"})`;
         return { content: [{ type: "text" as const, text: info }] };
       }
       return {
@@ -219,11 +245,14 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Pixel color as hex string (e.g. '#FF5733', '#00FF00FF')"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with the existing pixel instead of overwriting (useful for translucent effects)"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color, layer, frame }) => {
-      const result = await sendCommand("draw_pixel", { x, y, color, layer, frame });
+    async ({ x, y, color, blend, layer, frame }) => {
+      const result = await sendCommand("draw_pixel", { x, y, color, blend, layer, frame });
       if (result.success && result.data) {
         const clipped = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ clipped outside canvas)` : "";
         return {
@@ -253,16 +282,20 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Line color as hex string"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x1, y1, x2, y2, color, layer, frame }) => {
+    async ({ x1, y1, x2, y2, color, blend, layer, frame }) => {
       const result = await sendCommand("draw_line", {
         x1,
         y1,
         x2,
         y2,
         color,
+        blend,
         layer,
         frame,
       });
@@ -298,10 +331,13 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the rectangle; if false, draw outline only"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, width, height, color, filled, layer, frame }) => {
+    async ({ x, y, width, height, color, filled, blend, layer, frame }) => {
       const result = await sendCommand("draw_rect", {
         x,
         y,
@@ -309,6 +345,7 @@ export function registerDrawingTools(server: McpServer): void {
         height,
         color,
         filled,
+        blend,
         layer,
         frame,
       });
@@ -344,10 +381,13 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the ellipse; if false, draw outline only"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ cx, cy, rx, ry, color, filled, layer, frame }) => {
+    async ({ cx, cy, rx, ry, color, filled, blend, layer, frame }) => {
       const result = await sendCommand("draw_ellipse", {
         cx,
         cy,
@@ -355,6 +395,7 @@ export function registerDrawingTools(server: McpServer): void {
         ry,
         color,
         filled,
+        blend,
         layer,
         frame,
       });
@@ -385,11 +426,14 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Fill color as hex string"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color, layer, frame }) => {
-      const result = await sendCommand("fill_area", { x, y, color, layer, frame });
+    async ({ x, y, color, blend, layer, frame }) => {
+      const result = await sendCommand("fill_area", { x, y, color, blend, layer, frame });
       return {
         content: [
           {
@@ -416,11 +460,14 @@ export function registerDrawingTools(server: McpServer): void {
         }),
         1
       ).describe("Array of pixel objects, each with x, y, and color"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ pixels, layer, frame }) => {
-      const result = await sendCommand("draw_pixels", { pixels, layer, frame });
+    async ({ pixels, blend, layer, frame }) => {
+      const result = await sendCommand("draw_pixels", { pixels, blend, layer, frame });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.skipped) > 0 ? ` (${result.data.skipped} skipped/clipped)` : "";
         return {
@@ -501,11 +548,14 @@ export function registerDrawingTools(server: McpServer): void {
       closed: coerceBool()
         .default(false)
         .describe("If true, connect the last point back to the first"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, closed, layer, frame }) => {
-      const result = await sendCommand("draw_path", { points, color, closed, layer, frame });
+    async ({ points, color, closed, blend, layer, frame }) => {
+      const result = await sendCommand("draw_path", { points, color, closed, blend, layer, frame });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
         return {
@@ -541,11 +591,14 @@ export function registerDrawingTools(server: McpServer): void {
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the polygon; if false, draw outline only"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, filled, layer, frame }) => {
-      const result = await sendCommand("draw_polygon", { points, color, filled, layer, frame });
+    async ({ points, color, filled, blend, layer, frame }) => {
+      const result = await sendCommand("draw_polygon", { points, color, filled, blend, layer, frame });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
         return {

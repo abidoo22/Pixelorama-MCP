@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
 
 // ── Built-in pixel-art palettes ────────────────────────────────────────────
 const BUILTIN_PALETTES: Record<string, { name: string; description: string; colors: Array<{ role: string; hex: string }> }> = {
@@ -458,13 +458,15 @@ export function registerAiHelperTools(server: McpServer): void {
       frame: coerceInt().optional().describe("Frame index (defaults to current frame)"),
       layer: coerceInt().optional().describe("Layer index (defaults to current layer, ignored if all_layers=true)"),
       check_holes: coerceBool().default(true).describe("Detect transparent holes completely enclosed by solid pixels"),
+      solid_threshold: coerceFloat(0, 1).default(0.5).describe("Alpha threshold (0.0 to 1.0) to treat a pixel as solid boundary for enclosed hole detection. Defaults to 0.5 to avoid false positives on soft alpha vignettes."),
       check_orphans: coerceBool().default(true).describe("Detect isolated stray pixels floating with no neighbors"),
       orphan_distance: coerceInt(1, 5).default(1).describe("Search distance for stray pixel neighbors"),
     },
-    async ({ all_layers, frame, layer, check_holes, check_orphans, orphan_distance }) => {
+    async ({ all_layers, frame, layer, check_holes, solid_threshold, check_orphans, orphan_distance }) => {
       const params: Record<string, unknown> = {
         all_layers,
         check_holes,
+        solid_threshold,
         check_orphans,
         orphan_distance,
       };
@@ -485,8 +487,10 @@ export function registerAiHelperTools(server: McpServer): void {
           };
         }
 
+        const fullyOpaque = d.fully_opaque_pixels ?? d.total_opaque_pixels;
+        const semiTrans = d.semi_transparent_pixels ?? 0;
         let report = `## 🛡️ Sprite QA Report [frame:${d.frame}, layer:${d.layer}]\n`;
-        report += `- **Opaque Pixels**: ${d.total_opaque_pixels}\n`;
+        report += `- **Pixels**: ${d.non_transparent_pixels ?? d.total_opaque_pixels} non-transparent (${fullyOpaque} fully opaque, ${semiTrans} semi-transparent)\n`;
         report += `- **Bounding Box**: (${d.bounds.x}, ${d.bounds.y}) size ${d.bounds.width}×${d.bounds.height} (Canvas: ${d.canvas_size.width}×${d.canvas_size.height})\n`;
         report += `- **Unique Colors**: ${d.unique_color_count} (${d.unique_colors.join(", ")})\n`;
 

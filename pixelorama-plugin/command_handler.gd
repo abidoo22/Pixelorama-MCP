@@ -880,6 +880,8 @@ func _cmd_undo(_params: Dictionary) -> Dictionary:
 				"data": {
 					"message": "Undone: %s" % action_name,
 					"action": action_name,
+					"layer_index": cur_cursor.layer,
+					"layer_name": cur_cursor.layer_name,
 					"target_layer": prev_cursor.layer_name,
 					"target_layer_index": prev_cursor.layer,
 					"active_layer_index": cur_cursor.layer,
@@ -900,6 +902,7 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 	var ur = _get_undo_redo()
 	if ur != null:
 		if ur.has_redo():
+			var prev_cursor := _get_active_cursor_info(project)
 			ur.redo()
 			var action_name: String = ur.get_current_action_name()
 			var canvas = _api.general.get_canvas()
@@ -920,6 +923,10 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 					"action": action_name,
 					"layer_index": cur_cursor.layer,
 					"layer_name": cur_cursor.layer_name,
+					"target_layer": prev_cursor.layer_name,
+					"target_layer_index": prev_cursor.layer,
+					"active_layer_index": cur_cursor.layer,
+					"active_layer_name": cur_cursor.layer_name,
 					"frame": cur_cursor.frame,
 					"active_cursor": cur_cursor,
 					"has_undo": ur.has_undo(),
@@ -930,6 +937,17 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 			return {"success": false, "error": "Nothing to redo"}
 	return {"success": false, "error": "UndoRedo system not available"}
 
+func _put_pixel(image: Image, x: int, y: int, color: Color, blend: bool = false) -> void:
+	if x < 0 or x >= image.get_width() or y < 0 or y >= image.get_height():
+		return
+	if blend and color.a < 1.0:
+		var cur: Color = image.get_pixel(x, y)
+		if cur.a > 0.001:
+			image.set_pixel(x, y, cur.blend(color))
+			return
+	image.set_pixel(x, y, color)
+
+
 func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
 	var target := _get_target_cel_and_image(params)
 	if target.error != "":
@@ -939,6 +957,7 @@ func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
 	var x: int = int(params.get("x", 0))
 	var y: int = int(params.get("y", 0))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 
 	if x < 0 or x >= image.get_width() or y < 0 or y >= image.get_height():
 		return {
@@ -954,7 +973,7 @@ func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
 			}
 		}
 
-	image.set_pixel(x, y, color)
+	_put_pixel(image, x, y, color, blend)
 	_commit_image_change(image, "Draw Pixel", target.frame, target.layer)
 	return {
 		"success": true,
@@ -979,6 +998,7 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 	if pixels.is_empty():
 		return {"success": false, "error": "Missing or empty 'pixels' array"}
 
+	var blend: bool = bool(params.get("blend", false))
 	var image: Image = target.image
 	var w := image.get_width()
 	var h := image.get_height()
@@ -1004,7 +1024,7 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 			color = _parse_color(pixel)
 			color_cache[color_str] = color
 
-		image.set_pixel(x, y, color)
+		_put_pixel(image, x, y, color, blend)
 		drawn += 1
 
 	_commit_image_change(image, "Draw Pixels (batch)", target.frame, target.layer)
@@ -1034,6 +1054,7 @@ func _cmd_draw_rect(params: Dictionary) -> Dictionary:
 	var height: int = int(params.get("height", 1))
 	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 
 	var img_w := image.get_width()
 	var img_h := image.get_height()
@@ -1044,27 +1065,32 @@ func _cmd_draw_rect(params: Dictionary) -> Dictionary:
 		total = width * height
 		var clamped := Rect2i(x, y, width, height).intersection(Rect2i(0, 0, img_w, img_h))
 		if clamped.has_area():
-			image.fill_rect(clamped, color)
+			if blend and color.a < 1.0:
+				for py in range(clamped.position.y, clamped.end.y):
+					for px in range(clamped.position.x, clamped.end.x):
+						_put_pixel(image, px, py, color, true)
+			else:
+				image.fill_rect(clamped, color)
 			drawn = clamped.get_area()
 	else:
 		total = width * 2 + maxi(0, height - 2) * 2
 		for px in range(x, x + width):
 			if px >= 0 and px < img_w:
 				if y >= 0 and y < img_h:
-					image.set_pixel(px, y, color)
+					_put_pixel(image, px, y, color, blend)
 					drawn += 1
 				var bot := y + height - 1
 				if bot >= 0 and bot < img_h and height > 1:
-					image.set_pixel(px, bot, color)
+					_put_pixel(image, px, bot, color, blend)
 					drawn += 1
 		for py in range(y + 1, y + height - 1):
 			if py >= 0 and py < img_h:
 				if x >= 0 and x < img_w:
-					image.set_pixel(x, py, color)
+					_put_pixel(image, x, py, color, blend)
 					drawn += 1
 				var right := x + width - 1
 				if right >= 0 and right < img_w and width > 1:
-					image.set_pixel(right, py, color)
+					_put_pixel(image, right, py, color, blend)
 					drawn += 1
 
 	_commit_image_change(image, "Draw Rectangle", target.frame, target.layer)
@@ -1095,8 +1121,9 @@ func _cmd_draw_line(params: Dictionary) -> Dictionary:
 	var x2: int = int(params.get("x2", 0))
 	var y2: int = int(params.get("y2", 0))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 
-	var res := _draw_line_on_image(image, x1, y1, x2, y2, color)
+	var res := _draw_line_on_image(image, x1, y1, x2, y2, color, blend)
 	_commit_image_change(image, "Draw Line", target.frame, target.layer)
 	return {
 		"success": true,
@@ -1113,7 +1140,7 @@ func _cmd_draw_line(params: Dictionary) -> Dictionary:
 	}
 
 
-func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color: Color) -> Dictionary:
+func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color: Color, blend: bool = false) -> Dictionary:
 	var dx := absi(x2 - x1)
 	var dy := -absi(y2 - y1)
 	var sx := 1 if x1 < x2 else -1
@@ -1126,7 +1153,7 @@ func _draw_line_on_image(image: Image, x1: int, y1: int, x2: int, y2: int, color
 
 	while true:
 		if cx >= 0 and cx < image.get_width() and cy >= 0 and cy < image.get_height():
-			image.set_pixel(cx, cy, color)
+			_put_pixel(image, cx, cy, color, blend)
 			drawn += 1
 		else:
 			clipped += 1
@@ -1152,17 +1179,18 @@ func _cmd_draw_path(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "Path requires at least 2 points"}
 	var closed: bool = bool(params.get("closed", false))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 	var image: Image = target.image
 
 	var drawn := 0
 	var clipped := 0
 	for i in range(points.size() - 1):
-		var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color)
+		var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color, blend)
 		drawn += res.drawn
 		clipped += res.clipped
 
 	if closed and points.size() > 2:
-		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color)
+		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color, blend)
 		drawn += res.drawn
 		clipped += res.clipped
 
@@ -1205,6 +1233,7 @@ func _cmd_draw_polygon(params: Dictionary) -> Dictionary:
 
 	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 	var image: Image = target.image
 
 	var drawn := 0
@@ -1217,16 +1246,16 @@ func _cmd_draw_polygon(params: Dictionary) -> Dictionary:
 			for px in range(min_x, max_x + 1):
 				if Geometry2D.is_point_in_polygon(Vector2(px, py), points):
 					if px >= 0 and px < w and py >= 0 and py < h:
-						image.set_pixel(px, py, color)
+						_put_pixel(image, px, py, color, blend)
 						drawn += 1
 					else:
 						clipped += 1
 	else:
 		for i in range(points.size() - 1):
-			var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color)
+			var res := _draw_line_on_image(image, int(points[i].x), int(points[i].y), int(points[i+1].x), int(points[i+1].y), color, blend)
 			drawn += res.drawn
 			clipped += res.clipped
-		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color)
+		var res := _draw_line_on_image(image, int(points[-1].x), int(points[-1].y), int(points[0].x), int(points[0].y), color, blend)
 		drawn += res.drawn
 		clipped += res.clipped
 
@@ -1256,6 +1285,7 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 	var ry: int = int(params.get("ry", 1))
 	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 
 	var img_w := image.get_width()
 	var img_h := image.get_height()
@@ -1269,7 +1299,7 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 				var ny: float = float(py - cy) / float(ry) if ry > 0 else 0.0
 				if nx * nx + ny * ny <= 1.0:
 					if px >= 0 and px < img_w and py >= 0 and py < img_h:
-						image.set_pixel(px, py, color)
+						_put_pixel(image, px, py, color, blend)
 						drawn += 1
 					else:
 						clipped += 1
@@ -1280,7 +1310,7 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 			var px := cx + roundi(float(rx) * cos(angle))
 			var py := cy + roundi(float(ry) * sin(angle))
 			if px >= 0 and px < img_w and py >= 0 and py < img_h:
-				image.set_pixel(px, py, color)
+				_put_pixel(image, px, py, color, blend)
 				drawn += 1
 			else:
 				clipped += 1
@@ -1300,6 +1330,8 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 			"layer": target.layer
 		}
 	}
+
+
 func _cmd_fill_area(params: Dictionary) -> Dictionary:
 	var target := _get_target_cel_and_image(params)
 	if target.error != "":
@@ -1308,6 +1340,7 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 	var x: int = int(params.get("x", 0))
 	var y: int = int(params.get("y", 0))
 	var color := _parse_color(params)
+	var blend: bool = bool(params.get("blend", false))
 	var image: Image = target.image
 
 	var w := image.get_width()
@@ -1356,7 +1389,7 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 
 		# Fill the scanline
 		for fill_x in range(left, right + 1):
-			image.set_pixel(fill_x, py, color)
+			_put_pixel(image, fill_x, py, color, blend)
 			filled_count += 1
 			if py > 0:
 				var up_idx: int = (py - 1) * w + fill_x
@@ -1459,6 +1492,12 @@ func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
 			for x in range(w):
 				var px = image.get_pixel(x, y)
 				new_img.set_pixel(x, h - 1 - y, px)
+	elif mode == "mirror_bottom_to_top":
+		var half_h := h / 2
+		for y in range(half_h):
+			for x in range(w):
+				var px = image.get_pixel(x, h - 1 - y)
+				new_img.set_pixel(x, y, px)
 	else:
 		if axis == "vertical":
 			new_img.flip_y()
@@ -1655,6 +1694,7 @@ func _cmd_color_replace(params: Dictionary) -> Dictionary:
 	var old_color := _parse_color(params, "old_color", Color.BLACK)
 	var new_color := _parse_color(params, "new_color", Color.WHITE)
 	var tolerance: float = float(params.get("tolerance", 0.05))
+	var preserve_alpha: bool = bool(params.get("preserve_alpha", false))
 
 	var w := image.get_width()
 	var h := image.get_height()
@@ -1667,11 +1707,12 @@ func _cmd_color_replace(params: Dictionary) -> Dictionary:
 			if px.a > 0.01:
 				var dist := sqrt(pow(px.r - old_color.r, 2) + pow(px.g - old_color.g, 2) + pow(px.b - old_color.b, 2))
 				if dist <= tolerance:
-					modified_img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, px.a))
+					var out_a: float = px.a if preserve_alpha else new_color.a
+					modified_img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, out_a))
 					replaced_count += 1
 
 	_commit_image_change(modified_img, "Color Replace", target.frame, target.layer)
-	return {"success": true, "data": {"replaced_pixels": replaced_count, "old_color": old_color.to_html(), "new_color": new_color.to_html(), "frame": target.frame, "layer": target.layer}}
+	return {"success": true, "data": {"replaced_pixels": replaced_count, "old_color": old_color.to_html(), "new_color": new_color.to_html(), "preserve_alpha": preserve_alpha, "frame": target.frame, "layer": target.layer}}
 
 
 func _cmd_adjust_hsv(params: Dictionary) -> Dictionary:
@@ -1721,7 +1762,7 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 	if type < 0 or type > 2:
 		return {"success": false, "error": "Invalid layer type: %d (must be 0=Pixel, 1=Group, 2=3D)" % type}
 
-	var above_layer: int = params.get("above_layer", project.current_layer)
+	var above_layer: int = int(params.get("above_layer", project.layers.size() - 1))
 	if above_layer < 0 or above_layer >= project.layers.size():
 		return {"success": false, "error": "Invalid above_layer index: %d" % above_layer}
 
@@ -1734,6 +1775,11 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 	if project.has_signal("layers_updated"):
 		project.layers_updated.emit()
 
+	var new_layer_idx := above_layer + 1
+	project.current_layer = clampi(new_layer_idx, 0, project.layers.size() - 1)
+	_api.project.current_layer = project.current_layer
+	_api.project.select_cels([[project.current_frame, project.current_layer]])
+
 	var canvas = _api.general.get_canvas()
 	if canvas:
 		if "project_changed" in canvas:
@@ -1741,7 +1787,6 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	var new_layer_idx := above_layer + 1
 	var actual_name := layer_name
 	if new_layer_idx < project.layers.size():
 		actual_name = project.layers[new_layer_idx].name
@@ -1753,6 +1798,7 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 			"type": type,
 			"above_layer": above_layer,
 			"layer_index": new_layer_idx,
+			"total_layers": project.layers.size(),
 			"active_cursor": _get_active_cursor_info(project)
 		}
 	}
@@ -1957,6 +2003,25 @@ func _cmd_get_layers(_params: Dictionary) -> Dictionary:
 	var layers: Array = []
 	for i in range(project.layers.size()):
 		var layer = project.layers[i]
+		var type_str := "Pixel"
+		if layer.has_method("get_layer_type"):
+			var t: int = layer.get_layer_type()
+			match t:
+				0: type_str = "Pixel"
+				1: type_str = "Group"
+				2: type_str = "3D"
+				3: type_str = "TileMap"
+				4: type_str = "Audio"
+				_: type_str = "Pixel"
+		elif "type" in layer:
+			match int(layer.type):
+				0: type_str = "Pixel"
+				1: type_str = "Group"
+				2: type_str = "3D"
+				3: type_str = "TileMap"
+				4: type_str = "Audio"
+				_: type_str = "Pixel"
+
 		layers.append({
 			"index": i,
 			"name": layer.name,
@@ -1964,10 +2029,10 @@ func _cmd_get_layers(_params: Dictionary) -> Dictionary:
 			"locked": layer.locked,
 			"opacity": layer.opacity,
 			"blend_mode": layer.blend_mode,
-			"type": layer.get_class_name(),
+			"type": type_str,
 		})
 
-	return {"success": true, "data": {"layers": layers, "current_layer": project.current_layer}}
+	return {"success": true, "data": {"layers": layers, "current_layer": project.current_layer, "total_layers": project.layers.size()}}
 
 
 # ─────────────────────────────────────────────
@@ -3533,12 +3598,31 @@ func _cmd_create_layer_group(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "No active project"}
 
 	var group_name: String = params.get("name", "Group")
-	var above_layer: int = int(params.get("above_layer", project.current_layer))
+	var above_layer: int = int(params.get("above_layer", project.layers.size() - 1))
 	above_layer = clampi(above_layer, 0, project.layers.size() - 1)
 
 	_api.project.add_new_layer(above_layer, group_name, 1)
 
-	return {"success": true, "data": {"name": group_name, "type": "GroupLayer", "index": above_layer + 1, "total_layers": project.layers.size()}}
+	# Ensure all layer.index properties are strictly synchronized
+	for i in range(project.layers.size()):
+		project.layers[i].index = i
+	project.order_layers()
+	if project.has_signal("layers_updated"):
+		project.layers_updated.emit()
+
+	var new_layer_idx := above_layer + 1
+	project.current_layer = clampi(new_layer_idx, 0, project.layers.size() - 1)
+	_api.project.current_layer = project.current_layer
+	_api.project.select_cels([[project.current_frame, project.current_layer]])
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
+	return {"success": true, "data": {"name": group_name, "type": "GroupLayer", "index": new_layer_idx, "total_layers": project.layers.size()}}
 
 
 # ==============================================================================
@@ -3615,10 +3699,29 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 	if target.error != "":
 		return {"success": false, "error": target.error}
 
+	var project = _api.project.current_project
 	var radius: int = int(params.get("radius", 2))
 	var glow_hex: String = params.get("color", "#3498db")
 	var intensity: float = float(params.get("intensity", 0.6))
 	var as_new_layer: bool = bool(params.get("as_new_layer", false))
+	var falloff_mode: String = params.get("falloff", "smooth")  # "smooth", "linear", "dither"
+
+	# Selective Glow Targeting
+	var has_source_color: bool = params.has("source_color") and String(params["source_color"]).strip_edges() != ""
+	var source_col: Color = Color.html(params.get("source_color", "")) if has_source_color else Color.WHITE
+	var tolerance: float = float(params.get("tolerance", 0.15))
+
+	var has_luma_thresh: bool = params.has("luminance_threshold")
+	var luma_thresh: float = float(params.get("luminance_threshold", 0.0))
+
+	var has_rect: bool = params.has("rect") and (params["rect"] is Array) and params["rect"].size() >= 4
+	var bound_rect := Rect2i(0, 0, 0, 0)
+	if has_rect:
+		var r_arr: Array = params["rect"]
+		bound_rect = Rect2i(int(r_arr[0]), int(r_arr[1]), int(r_arr[2]), int(r_arr[3]))
+
+	var has_sel: bool = ("has_selection" in project) and project.has_selection
+	var sel_map = project.selection_map if ("selection_map" in project) else null
 
 	var glow_col := Color.html(glow_hex) if Color.html_is_valid(glow_hex) else Color(0.2, 0.6, 1.0, 1.0)
 	var img: Image = target.image
@@ -3627,35 +3730,92 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 	var h := img.get_height()
 	var glow_img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
 
+	var bayer4: Array = [
+		[ 0.5/16.0,  8.5/16.0,  2.5/16.0, 10.5/16.0],
+		[12.5/16.0,  4.5/16.0, 14.5/16.0,  6.5/16.0],
+		[ 3.5/16.0, 11.5/16.0,  1.5/16.0,  9.5/16.0],
+		[15.5/16.0,  7.5/16.0, 13.5/16.0,  5.5/16.0]
+	]
+
+	var emitter_count := 0
+
 	for y in range(h):
 		for x in range(w):
-			if img.get_pixel(x, y).a > 0.05:
-				for dy in range(-radius, radius + 1):
-					for dx in range(-radius, radius + 1):
-						var d := Vector2(dx, dy).length()
-						if d > 0.0 and d <= float(radius):
-							var gx := x + dx
-							var gy := y + dy
-							if gx >= 0 and gx < w and gy >= 0 and gy < h:
-								var falloff := (1.0 - (d / float(radius + 1))) * intensity
+			var px := img.get_pixel(x, y)
+			if px.a <= 0.05:
+				continue
+
+			# 1. Check bounding rect filter
+			if has_rect and not bound_rect.has_point(Vector2i(x, y)):
+				continue
+
+			# 2. Check active selection mask
+			if has_sel and sel_map != null:
+				if sel_map.get_pixel(x, y).a < 0.01:
+					continue
+
+			# 3. Check source color match
+			if has_source_color:
+				var c_diff := absf(px.r - source_col.r) + absf(px.g - source_col.g) + absf(px.b - source_col.b)
+				if c_diff > (tolerance * 3.0):
+					continue
+
+			# 4. Check luminance threshold
+			if has_luma_thresh:
+				var px_luma := px.r * 0.299 + px.g * 0.587 + px.b * 0.114
+				if px_luma < luma_thresh:
+					continue
+
+			emitter_count += 1
+
+			# Cast glow around qualifying emitter pixel
+			for dy in range(-radius, radius + 1):
+				for dx in range(-radius, radius + 1):
+					var d := Vector2(dx, dy).length()
+					if d > 0.0 and d <= float(radius):
+						var gx := x + dx
+						var gy := y + dy
+						if gx >= 0 and gx < w and gy >= 0 and gy < h:
+							var norm_dist := d / float(radius + 1)
+							var falloff := 0.0
+							if falloff_mode == "linear":
+								falloff = (1.0 - norm_dist) * intensity
+							elif falloff_mode == "dither":
+								var base_val := (1.0 - norm_dist) * intensity
+								var b_thresh: float = bayer4[gy % 4][gx % 4]
+								falloff = intensity if base_val > b_thresh else 0.0
+							else:  # "smooth" (quadratic feathering)
+								falloff = pow(1.0 - norm_dist, 2.0) * intensity
+
+							if falloff > 0.0:
 								var cur = glow_img.get_pixel(gx, gy)
 								var new_a = maxf(cur.a, falloff)
 								glow_img.set_pixel(gx, gy, Color(glow_col.r, glow_col.g, glow_col.b, new_a))
 
 	var glow_layer_idx: int = target.layer
 	if as_new_layer:
-		if target.layer > 0:
-			_api.project.add_new_layer(target.layer - 1, "Glow", 0)
-			glow_layer_idx = target.layer
-		else:
-			_api.project.add_new_layer(0, "Glow", 0)
-			_cmd_reorder_layers({"from_index": 1, "to_index": 0})
-			glow_layer_idx = 0
+		# Add new layer ABOVE target.layer so it illuminates rather than hides under opaque cels
+		_api.project.add_new_layer(target.layer, "Glow", 0)
+		glow_layer_idx = target.layer + 1
+		if glow_layer_idx < project.layers.size():
+			project.layers[glow_layer_idx].blend_mode = 9  # BaseLayer.BlendModes.ADD
 		_api.project.set_pixelcel_image(glow_img, target.frame, glow_layer_idx)
 	else:
-		var composite := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
-		composite.blend_rect(glow_img, Rect2i(0, 0, w, h), Vector2i.ZERO)
-		composite.blend_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
+		var composite := img.duplicate()
+		for gy in range(h):
+			for gx in range(w):
+				var g_px: Color = glow_img.get_pixel(gx, gy)
+				if g_px.a > 0.001:
+					var base_px: Color = composite.get_pixel(gx, gy)
+					if base_px.a <= 0.001:
+						composite.set_pixel(gx, gy, g_px)
+					else:
+						# Additive glow on top of existing cel pixels
+						var out_r := minf(1.0, base_px.r + g_px.r * g_px.a)
+						var out_g := minf(1.0, base_px.g + g_px.g * g_px.a)
+						var out_b := minf(1.0, base_px.b + g_px.b * g_px.a)
+						var out_a := maxf(base_px.a, g_px.a)
+						composite.set_pixel(gx, gy, Color(out_r, out_g, out_b, out_a))
 		_commit_image_change(composite, "Apply Glow", target.frame, target.layer)
 
 	var canvas = _api.general.get_canvas()
@@ -3673,6 +3833,9 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 			"intensity": intensity,
 			"as_new_layer": as_new_layer,
 			"glow_layer_index": glow_layer_idx,
+			"emitters_found": emitter_count,
+			"candidate_pixels": emitter_count,
+			"falloff": falloff_mode,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -3707,10 +3870,10 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 	var rh := maxf(1.0, float(ry2 - ry1))
 
 	var bayer4 := [
-		[ 0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0 ],
-		[12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0 ],
-		[ 3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0 ],
-		[15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0 ]
+		[  0.5/16.0,  8.5/16.0,  2.5/16.0, 10.5/16.0 ],
+		[ 12.5/16.0,  4.5/16.0, 14.5/16.0,  6.5/16.0 ],
+		[  3.5/16.0, 11.5/16.0,  1.5/16.0,  9.5/16.0 ],
+		[ 15.5/16.0,  7.5/16.0, 13.5/16.0,  5.5/16.0 ]
 	]
 
 	var has_sel: bool = ("has_selection" in project) and project.has_selection
@@ -4223,6 +4386,7 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 	var check_holes: bool = bool(params.get("check_holes", true))
 	var check_orphans: bool = bool(params.get("check_orphans", true))
 	var orphan_distance: int = int(params.get("orphan_distance", 1))
+	var solid_threshold: float = float(params.get("solid_threshold", 0.5))
 
 	var img: Image = null
 	var target_layer: int = project.current_layer
@@ -4248,6 +4412,9 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 			"data": {
 				"empty": true,
 				"total_opaque_pixels": 0,
+				"fully_opaque_pixels": 0,
+				"semi_transparent_pixels": 0,
+				"non_transparent_pixels": 0,
 				"unique_color_count": 0,
 				"unique_colors": [],
 				"bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
@@ -4261,14 +4428,20 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 			}
 		}
 
-	# 1. Color counting & non-transparent pixel map
+	# 1. Color counting & non-transparent pixel classification
 	var color_map := {}
-	var total_opaque := 0
+	var fully_opaque := 0
+	var semi_transparent := 0
+	var total_non_transparent := 0
 	for y in range(h):
 		for x in range(w):
 			var c := img.get_pixel(x, y)
 			if c.a > 0.05:
-				total_opaque += 1
+				total_non_transparent += 1
+				if c.a >= 0.99:
+					fully_opaque += 1
+				else:
+					semi_transparent += 1
 				var hex := "#" + c.to_html(c.a < 0.99)
 				color_map[hex] = color_map.get(hex, 0) + 1
 
@@ -4310,21 +4483,21 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 		var queue: Array = []
 
 		for x in range(w):
-			if img.get_pixel(x, 0).a <= 0.05:
+			if img.get_pixel(x, 0).a < solid_threshold:
 				outside[x] = true
 				queue.append(Vector2i(x, 0))
 			var b_idx := (h - 1) * w + x
-			if img.get_pixel(x, h - 1).a <= 0.05 and not outside[b_idx]:
+			if img.get_pixel(x, h - 1).a < solid_threshold and not outside[b_idx]:
 				outside[b_idx] = true
 				queue.append(Vector2i(x, h - 1))
 
 		for y in range(h):
 			var l_idx := y * w
-			if img.get_pixel(0, y).a <= 0.05 and not outside[l_idx]:
+			if img.get_pixel(0, y).a < solid_threshold and not outside[l_idx]:
 				outside[l_idx] = true
 				queue.append(Vector2i(0, y))
 			var r_idx := y * w + (w - 1)
-			if img.get_pixel(w - 1, y).a <= 0.05 and not outside[r_idx]:
+			if img.get_pixel(w - 1, y).a < solid_threshold and not outside[r_idx]:
 				outside[r_idx] = true
 				queue.append(Vector2i(w - 1, y))
 
@@ -4339,7 +4512,7 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 			for np in neighbors:
 				if np.x >= 0 and np.x < w and np.y >= 0 and np.y < h:
 					var n_idx: int = np.y * w + np.x
-					if not outside[n_idx] and img.get_pixel(np.x, np.y).a <= 0.05:
+					if not outside[n_idx] and img.get_pixel(np.x, np.y).a < solid_threshold:
 						outside[n_idx] = true
 						queue.append(np)
 
@@ -4395,7 +4568,10 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 		"success": true,
 		"data": {
 			"empty": false,
-			"total_opaque_pixels": total_opaque,
+			"total_opaque_pixels": fully_opaque,
+			"fully_opaque_pixels": fully_opaque,
+			"semi_transparent_pixels": semi_transparent,
+			"non_transparent_pixels": total_non_transparent,
 			"unique_color_count": color_map.size(),
 			"unique_colors": color_map.keys(),
 			"bounds": {

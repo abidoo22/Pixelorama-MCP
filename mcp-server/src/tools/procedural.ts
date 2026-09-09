@@ -96,11 +96,11 @@ export function registerProceduralTools(server: McpServer): void {
       axis: z
         .enum(["horizontal", "vertical"])
         .default("horizontal")
-        .describe("Axis to mirror on: 'horizontal' or 'vertical'"),
+        .describe("Axis used when mode is 'flip': 'horizontal' flips horizontally (left-to-right reflection), 'vertical' flips vertically (top-to-bottom reflection)"),
       mode: z
-        .enum(["flip", "mirror_left_to_right", "mirror_right_to_left", "mirror_top_to_bottom"])
+        .enum(["flip", "mirror_left_to_right", "mirror_right_to_left", "mirror_top_to_bottom", "mirror_bottom_to_top"])
         .default("mirror_left_to_right")
-        .describe("Operation mode: 'flip' (flips entire layer) or 'mirror_left_to_right' (copies left half onto right half)"),
+        .describe("Operation mode: 'flip' (flips entire layer along axis), 'mirror_left_to_right' (copies left half onto right half for symmetrical sprites), 'mirror_right_to_left', 'mirror_top_to_bottom', or 'mirror_bottom_to_top'"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
@@ -219,25 +219,53 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "apply_glow",
-    "Generate a soft glowing halo / bloom around non-transparent pixels (ideal for magic weapons, neon lights, glowing eyes, or cyberpunk art).",
+    "Generate a glowing bloom / halo around non-transparent pixels (ideal for lanterns, neon lights, magic, or celestial shrines). Additively blends over existing pixels so glowing cores remain bright. TIP: To prevent creating oversized blobs around the entire layer, use 'source_color', 'luminance_threshold', or 'rect' to target only the emitting light sources (e.g. lantern flame or magic crystal). When 'as_new_layer: true', inserts a dedicated glow layer directly above the source layer with ADD blend mode.",
     {
-      radius: coerceInt(1, 10).default(2).describe("Glow halo radius in pixels"),
-      color: z.string().default("#3498db").describe("Glow hex color"),
+      radius: coerceInt(1, 16).default(2).describe("Glow halo radius in pixels (1..16)"),
+      color: z.string().default("#3498db").describe("Glow hex color (e.g. #ffb703)"),
       intensity: coerceFloat(0, 1).default(0.6).describe("Glow intensity as float (0.0 to 1.0)"),
+      source_color: z
+        .string()
+        .optional()
+        .describe("Optional hex color (e.g. '#ffb703'). If set, only pixels matching this color will emit glow, leaving all other artwork untouched."),
+      tolerance: coerceFloat(0, 1)
+        .default(0.15)
+        .describe("Color matching tolerance when source_color is provided (0.0=exact, 1.0=match all)"),
+      luminance_threshold: coerceFloat(0, 1)
+        .optional()
+        .describe("Optional minimum brightness threshold (0.0..1.0). If set, only pixels brighter than this threshold emit glow (ideal for lights/lanterns without glowing dark outlines/bark)."),
+      falloff: z
+        .enum(["smooth", "linear", "dither"])
+        .default("smooth")
+        .describe("Falloff curve: 'smooth' (quadratic falloff preventing solid blocky halos), 'linear', or 'dither' (Bayer matrix dithered pixel-art light)."),
+      rect: z
+        .array(coerceInt(0))
+        .length(4)
+        .optional()
+        .describe("Optional [x, y, width, height] bounding box to restrict glow emission to a specific rectangular region."),
       as_new_layer: coerceBool()
         .default(false)
-        .describe("If true, places the glow on a new layer behind current layer instead of merging"),
+        .describe("If true, places the glow on a dedicated layer inserted directly above the target layer with ADD blend mode"),
       layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ radius, color, intensity, as_new_layer, layer, frame }) => {
-      const result = await sendCommand("apply_glow", { radius, color, intensity, as_new_layer, layer, frame });
+    async ({ radius, color, intensity, source_color, tolerance, luminance_threshold, falloff, rect, as_new_layer, layer, frame }) => {
+      const params: Record<string, unknown> = { radius, color, intensity, tolerance, falloff, as_new_layer };
+      if (source_color !== undefined) params.source_color = source_color;
+      if (luminance_threshold !== undefined) params.luminance_threshold = luminance_threshold;
+      if (rect !== undefined) params.rect = rect;
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+
+      const result = await sendCommand("apply_glow", params);
+      const emitters = result.data?.emitters_found !== undefined ? ` (${result.data.emitters_found} emitters found)` : "";
+      const glowPixels = result.data?.candidate_pixels !== undefined ? ` [${result.data.candidate_pixels} glow pixels]` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity} (new layer: ${as_new_layer}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              ? `✅ Glow effect applied with radius ${radius}px, color ${color}, intensity ${intensity}, falloff: ${falloff}${emitters}${glowPixels} (new layer: ${as_new_layer}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
