@@ -95,15 +95,13 @@ The AI will call `create_canvas`, compute the geometry and shading in memory, an
 
 ---
 
-## <a name="manual-scripts"></a> Running Drawing Scripts Manually (No API Key Needed)
+## <a name="manual-scripts"></a> Running Scripts Manually (No API Key Needed)
 
-Don't have an API key? No problem. Every example in `docs/examples/` is a standalone Node.js script you can run directly.
+Don't have an API key? You can run the universal asset importer script directly to stream reference pixel art into Pixelorama:
 
 **Make sure Pixelorama is open and visible, then:**
 ```bash
-node docs/examples/draw_coin.js
-node docs/examples/draw_potato.js
-node docs/examples/draw_banana.js
+node docs/examples/import_universal_asset.js
 ```
 
 Each script connects to port `7373`, creates its canvas, computes all geometry locally, and draws everything in optimized batches.

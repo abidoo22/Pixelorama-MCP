@@ -97,15 +97,19 @@ Then ask Claude: *"Create a 64×64 canvas and draw a shiny red apple with a drop
 
 ## 🎮 Example Gallery
 
-| Sprite | Method | Script |
+| Asset | Type | File / Description |
 |---|---|---|
-| 🏯 Moonlit Sanctuary | Showcase Pixel Art | `moonlit_sanctuary_3x.png` |
-| 🪙 Golden Coin | Drawn by AI agent | `docs/examples/draw_coin.js` |
-| 🥔 Potato | Drawn by AI agent | `docs/examples/draw_potato.js` |
-| 🍌 Banana | Drawn by AI agent | `docs/examples/draw_banana.js` |
-| 🌲 Tree | Drawn by AI agent | `docs/examples/draw_tree.js` |
-| 💪 Muscular Man | Imported from AI image | `docs/examples/import_universal_asset.js` |
-| Any image | Imported from AI image | `docs/examples/import_universal_asset.js` |
+| 🏯 Moonlit Sanctuary | Showcase Landscape (3x) | [`moonlit_sanctuary_3x.png`](moonlit_sanctuary_3x.png) — Pixel-crisp 1920×1200 Japanese lakeside pagoda with full moon |
+| 🐋 Leviathan at Dawn | Scenic Illustration | [`docs/examples/leviathan_dawn.png`](docs/examples/leviathan_dawn.png) — Celestial leviathan soaring through dawn clouds |
+| 🏛️ Museum Gallery | Environmental Art | [`docs/examples/museum_gallery_2x.png`](docs/examples/museum_gallery_2x.png) — Spotlighted museum hall with framed art & sculpture |
+| 🌆 Neo-Metropolis Overlook | Animated Panorama Banner | [`docs/examples/showcase_cyberpunk_banner.gif`](docs/examples/showcase_cyberpunk_banner.gif) — 192×64 animated cyberpunk city & cyber-ronin |
+| 🌌 The Astral Drift | Animated Panorama Banner | [`docs/examples/showcase_astral_banner.gif`](docs/examples/showcase_astral_banner.gif) — 192×64 animated floating island with levitating mana crystal |
+| 🦌 Sinister Wendigo Walk | Character Spritesheet | [`docs/examples/Sinister_Wendigo_Walk.png`](docs/examples/Sinister_Wendigo_Walk.png) — 8-frame walk cycle animation sheet |
+| 🏰 Dungeon Tileset | Game Environment Tileset | [`docs/examples/dungeon_tileset_4x.png`](docs/examples/dungeon_tileset_4x.png) — Stone brick walls, water, lava, doors, spikes, & props |
+| 🔬 Sci-Fi Lab Tileset | Prop & Furniture Sheet | [`docs/examples/ts_labs.png`](docs/examples/ts_labs.png) — Sci-fi consoles, containment tubes, server racks, & flooring |
+| 💬 Retro Dialog Box | UI Component | [`docs/examples/dialog_box_2x.png`](docs/examples/dialog_box_2x.png) — RPG dialogue frame with corner ornaments & prompt cursor |
+| 🪙 Golden Coin | Item Icon | [`docs/examples/coin.png`](docs/examples/coin.png) — Classic shaded 3D star golden coin with drop shadow |
+| 🖼️ Universal Importer | Importer Utility | [`docs/examples/import_universal_asset.js`](docs/examples/import_universal_asset.js) — Pure Node.js script to strip background & stream into Pixelorama |
 
 ---
 
