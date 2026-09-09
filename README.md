@@ -3,7 +3,7 @@
 > **For the ones who can imagine it but can't draw it.**
 
 <p align="center">
-  <img src="moonlit_sanctuary.png" alt="Moonlit Sanctuary - Pixel Art in Pixelorama" width="100%">
+  <img src="moonlit_sanctuary_3x.png" alt="Moonlit Sanctuary - Pixel Art in Pixelorama" width="100%">
 </p>
 
 **Pixelorama-MCP** is an official [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that bridges AI assistants (Claude, Cursor, Antigravity, GPT, Gemini, Qwen, etc.) with [Pixelorama](https://www.pixelorama.org/), the free & open-source pixel art editor.
@@ -99,7 +99,7 @@ Then ask Claude: *"Create a 64×64 canvas and draw a shiny red apple with a drop
 
 | Sprite | Method | Script |
 |---|---|---|
-| 🏯 Moonlit Sanctuary | Showcase Pixel Art | `moonlit_sanctuary.png` |
+| 🏯 Moonlit Sanctuary | Showcase Pixel Art | `moonlit_sanctuary_3x.png` |
 | 🪙 Golden Coin | Drawn by AI agent | `docs/examples/draw_coin.js` |
 | 🥔 Potato | Drawn by AI agent | `docs/examples/draw_potato.js` |
 | 🍌 Banana | Drawn by AI agent | `docs/examples/draw_banana.js` |
