@@ -400,6 +400,18 @@ func _cmd_create_canvas(params: Dictionary) -> Dictionary:
 
 	if project:
 		_api.project.current_project = project
+		if fill_color.a > 0.0 and project.frames.size() > 0 and project.frames[0].cels.size() > 0:
+			var cel = project.frames[0].cels[0]
+			if cel != null and cel.has_method("get_image"):
+				var c_img: Image = cel.get_image()
+				if c_img:
+					c_img.fill(fill_color)
+				if cel.has_method("update_texture"):
+					cel.update_texture()
+		var canvas = _api.general.get_canvas()
+		if canvas:
+			canvas.set("update_all_layers", true)
+			canvas.queue_redraw()
 		return {
 			"success": true,
 			"data": {
@@ -836,9 +848,9 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 
 	if params.has("scale"):
 		var sc: float = float(params["scale"])
-		if sc > 0.0 and sc < 1.0:
-			var target_w := maxi(1, int(roundf(cur_w * sc)))
-			var target_h := maxi(1, int(roundf(cur_h * sc)))
+		if sc > 0.0 and sc != 1.0 and sc <= 32.0:
+			var target_w := maxi(1, mini(4096, int(roundf(cur_w * sc))))
+			var target_h := maxi(1, mini(4096, int(roundf(cur_h * sc))))
 			img.resize(target_w, target_h, Image.INTERPOLATE_NEAREST)
 			cur_w = target_w
 			cur_h = target_h
@@ -5083,6 +5095,192 @@ func _cmd_get_history(params: Dictionary) -> Dictionary:
 	}
 
 
+# ─────────────────────────────────────────────
+# SCRIPT EVALUATION & CONTEXT HELPERS
+# ─────────────────────────────────────────────
+
+class ApiContext extends RefCounted:
+	var _api: Node
+	var _project
+	var _handler
+
+	func _init(api: Node, project, handler) -> void:
+		_api = api
+		_project = project
+		_handler = handler
+
+	func get_pixel(x: int, y: int, layer = -1, frame: int = -1) -> Color:
+		if _project == null:
+			return Color.TRANSPARENT
+		var f_idx: int = frame if frame >= 0 else _project.current_frame
+		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if layer != -1 else _project.current_layer
+		if f_idx < 0 or f_idx >= _project.frames.size() or l_idx < 0 or l_idx >= _project.layers.size():
+			return Color.TRANSPARENT
+		var cel = _project.frames[f_idx].cels[l_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return Color.TRANSPARENT
+		var img: Image = cel.get_image()
+		if img == null or x < 0 or x >= img.get_width() or y < 0 or y >= img.get_height():
+			return Color.TRANSPARENT
+		return img.get_pixel(x, y)
+
+	func get_layer_image(layer = -1, frame: int = -1) -> Image:
+		if _project == null:
+			return null
+		var f_idx: int = frame if frame >= 0 else _project.current_frame
+		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if layer != -1 else _project.current_layer
+		if f_idx < 0 or f_idx >= _project.frames.size() or l_idx < 0 or l_idx >= _project.layers.size():
+			return null
+		var cel = _project.frames[f_idx].cels[l_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return null
+		var img: Image = cel.get_image()
+		return img.duplicate() if img else null
+
+	func get_composite_image(frame: int = -1) -> Image:
+		if _project == null:
+			return null
+		var f_idx: int = frame if frame >= 0 else _project.current_frame
+		return _handler._composite_frame_layers(_project, f_idx)
+
+	func get_layers() -> Array:
+		var list: Array = []
+		if _project == null:
+			return list
+		for i in range(_project.layers.size()):
+			var lyr = _project.layers[i]
+			list.append({
+				"index": i,
+				"name": lyr.name,
+				"id": _handler._get_or_create_layer_id(lyr),
+				"visible": lyr.is_visible_in_hierarchy() if lyr.has_method("is_visible_in_hierarchy") else lyr.visible
+			})
+		return list
+
+	func get_canvas_size() -> Vector2i:
+		return _project.size if _project else Vector2i.ZERO
+
+	func create_image(width: int = -1, height: int = -1) -> Image:
+		var w: int = width if width > 0 else (int(_project.size.x) if _project else 64)
+		var h: int = height if height > 0 else (int(_project.size.y) if _project else 64)
+		return Image.create(w, h, false, Image.FORMAT_RGBA8)
+
+	func set_pixel_safe(image: Image, x: int, y: int, color: Color) -> bool:
+		if image != null and x >= 0 and y >= 0 and x < image.get_width() and y < image.get_height():
+			image.set_pixel(x, y, color)
+			return true
+		return false
+
+	func get_api_version() -> int:
+		return _api.get_api_version() if _api and _api.has_method("get_api_version") else -1
+
+	var raw_api:
+		get: return _api
+
+	func _get(property: StringName):
+		if _api != null and property in _api:
+			return _api.get(property)
+		return null
+
+
+func _get_godot_log_file() -> FileAccess:
+	var path := "user://logs/godot.log"
+	if FileAccess.file_exists(path):
+		return FileAccess.open(path, FileAccess.READ)
+	var alt_path := OS.get_user_data_dir() + "/logs/godot.log"
+	if FileAccess.file_exists(alt_path):
+		return FileAccess.open(alt_path, FileAccess.READ)
+	return null
+
+
+func _get_godot_log_pos() -> int:
+	var f := _get_godot_log_file()
+	if f == null:
+		return 0
+	var pos := f.get_length()
+	f.close()
+	return pos
+
+
+func _extract_godot_log_tail(from_pos: int = -1) -> String:
+	var f := _get_godot_log_file()
+	if f == null:
+		return ""
+	var total_len := f.get_length()
+	if from_pos >= 0 and from_pos >= total_len:
+		f.close()
+		return ""
+	var start := from_pos
+	if start < 0:
+		start = maxi(0, total_len - 4096)
+	f.seek(start)
+	var content := f.get_as_text()
+	f.close()
+	return content
+
+
+func _extract_compile_error_from_log(log_tail: String, full_source: String) -> String:
+	var lines := log_tail.split("\n")
+	var err_msg := ""
+	var line_num := -1
+	for i in range(lines.size() - 1, -1, -1):
+		var l := lines[i].strip_edges()
+		if l.begins_with("at: GDScript::reload") and line_num == -1:
+			var colon_idx := l.rfind(":")
+			if colon_idx != -1:
+				var end_paren := l.find(")", colon_idx)
+				if end_paren != -1:
+					line_num = int(l.substr(colon_idx + 1, end_paren - colon_idx - 1))
+		elif (l.begins_with("SCRIPT ERROR: Parse Error:") or l.begins_with("SCRIPT ERROR:")) and err_msg == "":
+			err_msg = l.replace("SCRIPT ERROR:", "").strip_edges()
+			if l.find("Parse Error:") != -1:
+				err_msg = l.substr(l.find("Parse Error:")).strip_edges()
+			if line_num != -1:
+				break
+
+	if err_msg != "":
+		if line_num > 0:
+			var code_lines := full_source.split("\n")
+			var snippet := ""
+			if line_num <= code_lines.size():
+				snippet = code_lines[line_num - 1].strip_edges()
+			return "%s (at line %d: '%s')" % [err_msg, line_num, snippet]
+		return err_msg
+	return ""
+
+
+func _extract_runtime_error_from_log(log_tail: String, full_source: String) -> String:
+	if log_tail.strip_edges() == "":
+		return ""
+	var lines := log_tail.split("\n")
+	var err_msg := ""
+	var line_num := -1
+	for i in range(lines.size() - 1, -1, -1):
+		var l := lines[i].strip_edges()
+		if (l.begins_with("at: run") or l.begins_with("at: execute")) and line_num == -1:
+			var colon_idx := l.rfind(":")
+			if colon_idx != -1:
+				var end_paren := l.find(")", colon_idx)
+				if end_paren != -1:
+					line_num = int(l.substr(colon_idx + 1, end_paren - colon_idx - 1))
+		elif (l.begins_with("SCRIPT ERROR:") or l.begins_with("ERROR:")) and err_msg == "":
+			if l.find("Parse Error:") != -1 or l.find("GDScript::reload") != -1:
+				continue
+			err_msg = l.replace("SCRIPT ERROR:", "").replace("ERROR:", "").strip_edges()
+			if line_num != -1:
+				break
+
+	if err_msg != "":
+		if line_num > 0:
+			var code_lines := full_source.split("\n")
+			var snippet := ""
+			if line_num <= code_lines.size():
+				snippet = code_lines[line_num - 1].strip_edges()
+			return "%s (at line %d: '%s')" % [err_msg, line_num, snippet]
+		return err_msg
+	return ""
+
+
 func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	var code: String = params.get("code", "")
 	if code.strip_edges() == "":
@@ -5108,33 +5306,104 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 		else:
 			full_source = code
 	else:
-		full_source = "extends RefCounted\n\nfunc run(api: Node, image: Image, project, params: Dictionary) -> Variant:\n"
+		full_source = "extends RefCounted\n\nfunc run(api, image: Image, project, params: Dictionary) -> Variant:\n"
 		var lines := code.split("\n")
+		var min_indent := -1
 		for line in lines:
-			var trimmed_line := line
-			var leading_tabs := ""
-			while trimmed_line.begins_with("    "):
-				leading_tabs += "\t"
-				trimmed_line = trimmed_line.substr(4)
-			while trimmed_line.begins_with("\t"):
-				leading_tabs += "\t"
-				trimmed_line = trimmed_line.substr(1)
-			full_source += "\t" + leading_tabs + trimmed_line + "\n"
+			var stripped := line.strip_edges()
+			if stripped == "":
+				continue
+			var count := 0
+			for i in range(line.length()):
+				var ch := line[i]
+				if ch == " " or ch == "\t":
+					count += 1
+				else:
+					break
+			if min_indent == -1 or count < min_indent:
+				min_indent = count
+		if min_indent == -1:
+			min_indent = 0
+
+		for line in lines:
+			var stripped := line.strip_edges()
+			if stripped == "":
+				full_source += "\n"
+				continue
+			var count := 0
+			var idx := 0
+			while idx < line.length() and count < min_indent:
+				var ch := line[idx]
+				if ch == " " or ch == "\t":
+					count += 1
+					idx += 1
+				else:
+					break
+			var rel_line := line.substr(idx)
+			var rel_tabs := ""
+			while rel_line.begins_with("    "):
+				rel_tabs += "\t"
+				rel_line = rel_line.substr(4)
+			while rel_line.begins_with("  "):
+				rel_tabs += "\t"
+				rel_line = rel_line.substr(2)
+			while rel_line.begins_with("\t"):
+				rel_tabs += "\t"
+				rel_line = rel_line.substr(1)
+			full_source += "\t" + rel_tabs + rel_line + "\n"
 		full_source += "\treturn null\n"
 
+	# Transparent bounds guarding: rewrite .set_pixel and non-api .get_pixel calls to prevent native Godot SIGSEGV heap overflows
+	var regex_set_px := RegEx.new()
+	regex_set_px.compile("\\b([a-zA-Z0-9_]+)\\.set_pixel\\s*\\(")
+	if regex_set_px.is_valid():
+		full_source = regex_set_px.sub(full_source, "_safe_set_pixel($1, ", true)
+
+	var regex_get_px := RegEx.new()
+	regex_get_px.compile("\\b(?!(?:api)\\b)([a-zA-Z0-9_]+)\\.get_pixel\\s*\\(")
+	if regex_get_px.is_valid():
+		full_source = regex_get_px.sub(full_source, "_safe_get_pixel($1, ", true)
+
+	var safe_helpers := "\n\nstatic var _clipped_pixel_count: int = 0\n\nstatic func _safe_set_pixel(img: Image, px: int, py: int, col: Color) -> void:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\timg.set_pixel(px, py, col)\n\telse:\n\t\t_clipped_pixel_count += 1\n\nstatic func _safe_get_pixel(img: Image, px: int, py: int) -> Color:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\treturn img.get_pixel(px, py)\n\treturn Color(0, 0, 0, 0)\n"
+	full_source += safe_helpers
+
+	var log_pos_before_compile := _get_godot_log_pos()
 	var script := GDScript.new()
 	script.source_code = full_source
 	var err = script.reload()
+
+	# Auto-fallback: If ERR_PARSE_ERROR (43), check if static type inference ':=' on Variant failed
 	if err != OK:
+		var regex_infer := RegEx.new()
+		regex_infer.compile("\\bvar\\s+([a-zA-Z_]\\w*)\\s*:=")
+		if regex_infer.is_valid() and regex_infer.search(full_source) != null:
+			var patched_source := regex_infer.sub(full_source, "var $1 =", true)
+			var retry_script := GDScript.new()
+			retry_script.source_code = patched_source
+			var retry_err = retry_script.reload()
+			if retry_err == OK:
+				script = retry_script
+				full_source = patched_source
+				err = OK
+
+	if err != OK:
+		var log_tail := _extract_godot_log_tail(log_pos_before_compile)
+		var parse_err := _extract_compile_error_from_log(log_tail, full_source)
+		var err_str := "Failed to compile GDScript (Error code %d)" % err
+		if parse_err != "":
+			err_str = "Failed to compile GDScript: %s" % parse_err
 		return {
 			"success": false,
-			"error": "Failed to compile GDScript (Error code %d)" % err,
+			"error": err_str,
 			"source": full_source
 		}
 
 	var instance = script.new()
 	if instance == null:
 		return {"success": false, "error": "Failed to instantiate GDScript"}
+
+	if instance.get("_clipped_pixel_count") != null:
+		instance.set("_clipped_pixel_count", 0)
 
 	var method_name := ""
 	var method_info: Dictionary = {}
@@ -5150,6 +5419,8 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 			method_info = m
 			break
 
+	var api_ctx = ApiContext.new(_api, project, self)
+
 	var call_args: Array = []
 	var m_args: Array = method_info.get("args", [])
 	for arg in m_args:
@@ -5162,11 +5433,11 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 		elif aname in ["project", "proj"]:
 			call_args.append(project)
 		elif aname in ["api", "extensions_api", "node"]:
-			call_args.append(_api)
+			call_args.append(api_ctx)
 		else:
 			var pos := call_args.size()
 			if pos == 0:
-				call_args.append(_api)
+				call_args.append(api_ctx)
 			elif pos == 1:
 				call_args.append(image)
 			elif pos == 2:
@@ -5176,10 +5447,74 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 			else:
 				call_args.append(null)
 
+	var log_pos_before_run := _get_godot_log_pos()
 	var result = instance.callv(method_name, call_args)
 
+	var log_tail_run := _extract_godot_log_tail(log_pos_before_run)
+	var runtime_err := _extract_runtime_error_from_log(log_tail_run, full_source)
+	if runtime_err != "":
+		return {
+			"success": false,
+			"error": "GDScript runtime error: %s" % runtime_err,
+			"source": full_source
+		}
+
+	var clipped_pixels: int = 0
+	if instance.get("_clipped_pixel_count") != null:
+		clipped_pixels = int(instance.get("_clipped_pixel_count"))
+
 	if result is Image:
+		if result.get_size() != project.size:
+			var new_w: int = int(result.get_width())
+			var new_h: int = int(result.get_height())
+			for f in project.frames:
+				for cel in f.cels:
+					if cel.get_class_name() == "PixelCel":
+						var cimg: Image = cel.get_image()
+						cimg.resize(new_w, new_h, Image.INTERPOLATE_NEAREST)
+			project.size = Vector2i(new_w, new_h)
+			var canvas_node = _api.general.get_canvas()
+			if canvas_node:
+				var cam = canvas_node.get("camera")
+				if cam and cam.has_method("fit_to_frame"):
+					cam.fit_to_frame()
 		image = result
+	elif result is PackedByteArray:
+		var w := int(project.size.x)
+		var h := int(project.size.y)
+		if script_params.has("width") and script_params.has("height"):
+			var pw := int(script_params["width"])
+			var ph := int(script_params["height"])
+			if pw > 0 and ph > 0 and (result.size() == pw * ph * 4 or result.size() == pw * ph * 3):
+				w = pw
+				h = ph
+				if Vector2i(w, h) != project.size:
+					for f in project.frames:
+						for cel in f.cels:
+							if cel.get_class_name() == "PixelCel":
+								var cimg: Image = cel.get_image()
+								cimg.resize(w, h, Image.INTERPOLATE_NEAREST)
+					project.size = Vector2i(w, h)
+					var canvas_node = _api.general.get_canvas()
+					if canvas_node:
+						var cam = canvas_node.get("camera")
+						if cam and cam.has_method("fit_to_frame"):
+							cam.fit_to_frame()
+		if result.size() == w * h * 4:
+			var img_from_bytes := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, result)
+			if img_from_bytes:
+				image = img_from_bytes
+		elif result.size() == w * h * 3:
+			var img_from_bytes := Image.create_from_data(w, h, false, Image.FORMAT_RGB8, result)
+			if img_from_bytes:
+				img_from_bytes.convert(Image.FORMAT_RGBA8)
+				image = img_from_bytes
+		else:
+			return {
+				"success": false,
+				"error": "PackedByteArray size %d does not match canvas dimensions %dx%d (expected %d bytes for RGBA8 or %d for RGB8). Note: Canvas size is %dx%d; use 'create_canvas' to match your intended buffer dimensions." % [result.size(), w, h, w * h * 4, w * h * 3, int(project.size.x), int(project.size.y)],
+				"source": full_source
+			}
 
 	if image != null:
 		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx)
@@ -5191,13 +5526,28 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
+	var result_repr = result
+	if result is Image:
+		result_repr = "Image updated"
+	elif result is PackedByteArray:
+		result_repr = "Image buffer updated"
+
+	var result_data := {
+		"result": result_repr,
+		"frame": frame_idx,
+		"layer": layer_idx
+	}
+	if clipped_pixels > 0:
+		result_data["clipped_pixels"] = clipped_pixels
+		result_data["warning"] = "⚠️ %d pixel writes were clipped outside canvas bounds (%dx%d). Use 'create_canvas' to expand canvas dimensions if you intended a larger drawing area!" % [clipped_pixels, int(project.size.x), int(project.size.y)]
+		if result_repr == null or str(result_repr) == "ok" or str(result_repr) == "":
+			result_data["result"] = "⚠️ %d pixels clipped outside canvas bounds (%dx%d)" % [clipped_pixels, int(project.size.x), int(project.size.y)]
+		else:
+			result_data["result"] = "%s (⚠️ %d pixels clipped outside %dx%d canvas)" % [str(result_repr), clipped_pixels, int(project.size.x), int(project.size.y)]
+
 	return {
 		"success": true,
-		"data": {
-			"result": result if not (result is Image) else "Image updated",
-			"frame": frame_idx,
-			"layer": layer_idx
-		}
+		"data": result_data
 	}
 
 

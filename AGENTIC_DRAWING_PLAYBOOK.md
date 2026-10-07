@@ -133,6 +133,73 @@ await cmd("eval_gdscript", {
 });
 ```
 
+### Multi-Layer Sampling & Reflections (Water / Mirrors)
+Use `api.get_layer_image(layer_name)` to sample underlying layers directly without reimplementing shaders:
+
+```javascript
+await cmd("eval_gdscript", {
+  layer: "Lake",
+  code: `
+    func run(api, image: Image, project, params: Dictionary):
+        var sky_img = api.get_layer_image("Sky")
+        for y in range(image.get_height()):
+            var sample_y = clamp(image.get_height() - y - 1, 0, sky_img.get_height() - 1)
+            for x in range(image.get_width()):
+                var sky_col = sky_img.get_pixel(x, sample_y)
+                image.set_pixel(x, y, sky_col.darkened(0.25))
+        return "reflection_rendered"
+  `
+});
+```
+
+### Bulk Image Assignment (Ultra-Fast Full-Canvas Generation — 0.001ms/px)
+Instead of executing 57,600+ `image.set_pixel()` calls in nested loops (which has high overhead), construct and return a `PackedByteArray` or `Image` directly. Pixelorama blits the entire buffer into engine memory in $< 0.1$ ms:
+
+#### Option 1: Raw Bytes with `PackedByteArray` (Recommended for Complex Math/Dithering)
+```javascript
+await cmd("eval_gdscript", {
+  code: `
+    func run(api, image: Image, project, params: Dictionary) -> PackedByteArray:
+        var w: int = image.get_width()
+        var h: int = image.get_height()
+        var buf := PackedByteArray()
+        buf.resize(w * h * 4) # 4 bytes per pixel: R, G, B, A
+
+        # Example: Dithered sky / lake gradient
+        var bay: Array = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+        for y in range(h):
+            for x in range(w):
+                var idx: int = (y * w + x) * 4
+                var dth: int = (bay[y % 4][x % 4] - 8) * 2
+                buf[idx]     = clampi(15 + dth, 0, 255)  # R
+                buf[idx + 1] = clampi(35 + dth, 0, 255)  # G
+                buf[idx + 2] = clampi(75 + dth, 0, 255)  # B
+                buf[idx + 3] = 255                       # A (opaque)
+        return buf
+  `
+});
+```
+
+#### Option 2: Returning a newly created `Image` (Auto-Adapts Canvas Dimensions)
+```javascript
+await cmd("eval_gdscript", {
+  code: `
+    func run(api, image: Image, project, params: Dictionary) -> Image:
+        var w: int = int(project.size.x)
+        var h: int = int(project.size.y)
+        var new_img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+        new_img.fill(Color("#05070f"))
+        return new_img
+  `
+});
+```
+
+> ⚠️ **CRITICAL RULE — Canvas Size & Restart Safety:**
+> When Pixelorama restarts, the active canvas resets to the default **64×64**.
+> - **Always call `create_canvas(width, height)`** at the start of your drawing session before issuing procedural scripts.
+> - Or check `var sz = api.get_canvas_size()` inside your script.
+> - In v2.4+, all `image.set_pixel()` and `image.get_pixel()` calls are **transparently bounds-checked** in-engine so out-of-bounds writes will safely clip and report a diagnostic warning rather than ever crashing the engine.
+
 ---
 
 ## 4. Geometry & Shading Recipes

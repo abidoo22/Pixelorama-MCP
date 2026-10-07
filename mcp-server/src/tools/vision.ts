@@ -12,7 +12,7 @@ import { coerceInt, coerceFloat } from "../utils/schema_helpers.js";
 export function registerVisionTools(server: McpServer): void {
   server.tool(
     "capture_canvas_image",
-    "Capture a visual screenshot of the current canvas (all visible layers blended) as a PNG image. Supports sub-region cropping and downscaling to reduce payload size and context usage.",
+    "Capture a visual screenshot of the current canvas (all visible layers blended) as a PNG image. Supports sub-region cropping, downscaling (< 1.0) to reduce payload size, and nearest-neighbor upscaling (> 1.0 up to 32.0) to magnify pixels for visual inspection.",
     {
       frame: coerceInt(0)
         .optional()
@@ -22,7 +22,7 @@ export function registerVisionTools(server: McpServer): void {
       width: coerceInt(1).optional().describe("Optional crop region width in pixels"),
       height: coerceInt(1).optional().describe("Optional crop region height in pixels"),
       max_size: coerceInt(1, 4096).optional().describe("Optional maximum image dimension in pixels (downscales to fit while preserving aspect ratio)"),
-      scale: coerceFloat(0.01, 1.0).optional().describe("Optional downscale scale factor (e.g. 0.5 for 50% scale, 0.25 for 25% scale)"),
+      scale: coerceFloat(0.01, 32.0).optional().describe("Optional scale factor (0.01..32.0). Values < 1.0 downscale to save bandwidth; values > 1.0 (e.g. 2, 4, 8) magnify pixels using nearest-neighbor interpolation for crisp visual inspection"),
     },
     async ({ frame, x, y, width, height, max_size, scale }) => {
       const params: Record<string, unknown> = {};

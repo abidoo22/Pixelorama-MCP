@@ -414,26 +414,29 @@ export function registerProceduralTools(server: McpServer): void {
   // ── eval_gdscript ──────────────────────────────────────────────────────────
   server.tool(
     "eval_gdscript",
-    "Execute custom GDScript code natively inside Pixelorama. The script runs with direct access to 'api' (ExtensionsApi), 'image' (target Cel Image), 'project', and 'params'. Ideal for procedural texture passes, noise generation, mathematical gradients, and bulk loops that run in milliseconds.",
+    "Execute custom GDScript code natively inside Pixelorama. The script runs with direct access to 'api' (ApiContext with get_pixel, get_layer_image, get_composite_image, get_layers, get_canvas_size, create_image, set_pixel_safe), 'image' (target Cel Image), 'project', and 'params'. HIGH PERFORMANCE BULK WRITES: To avoid slow per-pixel loops, 'run()' can return a PackedByteArray (raw RGBA8/RGB8 bytes) or Image (Image.create(w, h, false, Image.FORMAT_RGBA8) or api.create_image(w, h)) for instant blit commit in < 0.1ms; canvas automatically adapts if dimensions differ. Out-of-bounds 'set_pixel' calls are transparently bounds-checked to guarantee zero crash.",
     {
       code: z
         .string()
-        .describe("GDScript code. Can define 'func run(api, image: Image, project, params: Dictionary):' or provide script statements that mutate 'image'."),
+        .describe("GDScript code. Can define 'func run(api, image: Image, project, params: Dictionary):' (can return Image, PackedByteArray, or custom value) or provide bare script statements that mutate 'image'."),
       layer: layerHandleSchema,
       frame: coerceInt(0).optional().describe("Optional target frame index (defaults to active frame)"),
       params: z
         .record(z.any())
         .optional()
-        .describe("Optional key-value parameters dictionary passed into script"),
+        .describe("Optional key-value parameters dictionary passed into script (e.g. { width: 320, height: 180 })"),
     },
     async ({ code, layer, frame, params }) => {
       const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {} }, 60_000);
+      const resVal = result.data?.result;
+      const resStr = resVal !== undefined ? JSON.stringify(resVal) : "completed";
+      const warnStr = result.data?.warning ? `\n${result.data.warning}` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `⚡ GDScript executed successfully on [frame:${result.data?.frame}, layer:${result.data?.layer}]: ${JSON.stringify(result.data?.result ?? "ok")}`
+              ? `⚡ GDScript executed successfully on [frame:${result.data?.frame}, layer:${result.data?.layer}]: ${resStr}${warnStr}`
               : `❌ ${result.error}`,
           },
         ],

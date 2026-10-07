@@ -49,11 +49,11 @@ You describe your creative vision in natural language. The AI computes geometry,
 
 - 🖌️ **Natural Language to Pixel Art:** Prompt sprites, UI panels, game assets, textures, and landscapes in plain English.
 - ⚡ **Ultra-Fast Drawing Throughput:** Features `draw_pixels_fast` accepting flat coordinate/color arrays (`[x,y,col]` or `[x,y,r,g,b,a]`) running at **~0.02 ms/pixel**—over 100× faster than per-pixel roundtrips.
-- ⚙️ **Direct GDScript Eval Hook (`eval_gdscript`):** Execute dynamic GDScript code in-engine on the canvas for instant procedural patterns, cellular automata, fractal foliage, and noise fills.
+- ⚙️ **Direct GDScript Eval Hook (`eval_gdscript`):** Execute dynamic GDScript in-engine with cross-layer sampling (`api.get_layer_image`), bulk Image / buffer assignment, auto-fallback for `:=` type inference, and pinpoint line-number error reporting.
 - 🧱 **Stable Layer Identifiers (`layer_id`):** Layer tools return persistent UUID handles, allowing safe layer targeting by ID, name, or index without index-shift corruption.
 - 🌈 **Advanced Shading & Gradients:** Non-destructive radial and linear gradients with Bayer dithering, alpha blending (`blend: true`), elliptical falloff, smoothstep curves, and bloom glow.
 - 📐 **Composition & Scene Planning (`generate_scene_plan`):** Generates horizon placement, rule-of-thirds focal points, value silhouettes, depth hierarchies, and layer plans for large scenes.
-- 👁️ **Visual Inspection with Downscaling:** `capture_canvas_image` supports custom bounding regions and nearest-neighbor downscaling (`max_size`, `scale`) for token-efficient multimodal review.
+- 👁️ **Visual Inspection & Magnification:** `capture_canvas_image` supports custom bounding regions, downscaling (< 1.0) to save tokens, and nearest-neighbor magnification (up to 32×) for pixel-level multimodal visual inspection.
 - 🎞️ **Animation & Cel Cloning:** Create walk cycles, frame tweens, onion skinning, and frame-rate configs with deep-cloning support.
 - 📦 **Godot 4 Game Asset Pipeline:** Direct export to Godot 4 `SpriteFrames` (`.tres`), Godot 4 `TileSet`, APNG, GIF, and spritesheets.
 

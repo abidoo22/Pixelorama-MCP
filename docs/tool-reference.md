@@ -713,7 +713,7 @@ Captures a visual screenshot of the current canvas (all layers blended) and retu
 | `width` | number | — | Sub-region crop width in pixels |
 | `height` | number | — | Sub-region crop height in pixels |
 | `max_size` | number | — | Downscale longest dimension to this maximum size |
-| `scale` | number | — | Downscale multiplier (e.g. `0.5` for 50% preview) |
+| `scale` | number | — | Scale multiplier (`0.01` to `32.0`). Values < 1.0 downscale to save tokens; values > 1.0 (e.g. `2`, `4`, `8`) magnify pixels using nearest-neighbor interpolation for crisp visual inspection |
 
 ---
 
@@ -1025,27 +1025,46 @@ Fills a bounding box with linear or radial gradients, Bayer dithering, alpha pre
 ---
 
 ### `eval_gdscript` ⚡ Dynamic In-Engine GDScript Execution
-Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides direct access to `image` (`Image`), `project`, `api` (`ExtensionsApi`), and Godot classes for procedural generation, noise fields, and custom drawing loops in milliseconds. Automatically creates an undo action so modifications are completely reversible.
+Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides direct access to `image` (`Image`), `project`, `api` (`ApiContext`), and Godot classes for procedural generation, noise fields, and custom drawing loops in milliseconds. Automatically creates an undo action so modifications are completely reversible.
+
+**Key Capabilities:**
+- **Bulk Image / Buffer Returns**: The script can directly construct and return a new `Image` or raw `PackedByteArray` (RGBA8/RGB8) to replace the canvas in one step, avoiding per-pixel overhead ($< 0.1$ ms).
+- **Auto-Canvas Adaptation**: If `run()` returns an `Image` with different dimensions from the project, Pixelorama automatically resizes all cels and the project canvas to fit the new artwork.
+- **Transparent Bounds Guarding & Crash Immunity**: All `image.set_pixel()` and `image.get_pixel()` calls are automatically bounds-checked in-engine. Out-of-bounds writes safely clip and report diagnostic counts in the tool response rather than crashing the engine.
+- **Cross-Layer Read Access & Helpers via `api`**:
+  - `api.get_pixel(x, y, layer, frame)` — Read color from any layer by index, name, or UUID.
+  - `api.get_layer_image(layer, frame)` — Return a safe clone of any layer's `Image` for multi-pixel reads (e.g. reflections).
+  - `api.get_composite_image(frame)` — Return the blended canvas image up to the current frame.
+  - `api.get_layers()` — Query metadata and names of all layers.
+  - `api.get_canvas_size()` — Returns `Vector2i` dimensions of the canvas.
+  - `api.create_image(w, h)` — Creates a new RGBA8 `Image` initialized to the canvas size or custom dimensions.
+  - `api.set_pixel_safe(image, x, y, color)` — Safe bounds-guarded pixel setter returning `bool`.
+- **Auto-fallback on Type Inference**: Automatically converts `var x := ...` to `var x = ...` if Godot 4's static type inference on Variant expressions fails.
+- **Pinpoint Error Reporting**: Returns the exact line number, column, and code snippet for both compile and runtime errors.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `code` | string | ✅ | GDScript code to execute. Can define `func run(api, image: Image, project, params: Dictionary)` or provide script statements directly mutating `image` |
+| `code` | string | ✅ | GDScript code to execute. Can define `func run(api, image: Image, project, params: Dictionary)` (returning `Image`, `PackedByteArray`, or `Variant`) or provide bare statements mutating `image` |
 | `layer` | number \| string | — | Target layer index, name, or stable `layer_id` (defaults to active layer) |
 | `frame` | number | — | Target frame index (defaults to active frame) |
 | `params` | object | — | Optional custom dictionary passed into the script |
 
 ```gdscript
-# Example 1: Bare statements (image is directly provided)
-for y in range(image.get_height()):
-    for x in range(image.get_width()):
-        if (x + y) % 4 == 0:
-            image.set_pixel(x, y, Color.CYAN)
-return "procedural pass complete"
+# Example 1: Cross-layer reflection pass (Lake sampling Sky)
+func run(api, image: Image, project, params: Dictionary):
+    var sky_img = api.get_layer_image("Sky")
+    for y in range(image.get_height()):
+        var sky_y = clamp(image.get_height() - y - 1, 0, sky_img.get_height() - 1)
+        for x in range(image.get_width()):
+            var sky_col = sky_img.get_pixel(x, sky_y)
+            image.set_pixel(x, y, sky_col.lerp(Color("#003366"), 0.4))
+    return "reflection complete"
 
-# Example 2: Function form with custom parameters
-func run(api, image: Image, project, params: Dictionary) -> void:
-    var radius = params.get("radius", 10)
-    image.fill_rect(Rect2i(20, 20, radius, radius), Color.MAGENTA)
+# Example 2: Bulk Image return (creates and returns a new Image directly)
+func run(api, image: Image, project, params: Dictionary) -> Image:
+    var new_img = Image.create(project.size.x, project.size.y, false, Image.FORMAT_RGBA8)
+    new_img.fill(Color("#1a1a2e"))
+    return new_img
 ```
 
 ---
