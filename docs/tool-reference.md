@@ -252,7 +252,7 @@ Draws pixels via a flat numeric/hex array with engine-speed rasterization (~0.02
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `data` | array | ✅ | Flat array: either `[x, y, color_hex, ...]` (stride 3) or `[x, y, r, g, b, a, ...]` (stride 6, values 0..255 or 0..1) |
+| `data` | array | ✅ | Flat array: either `[x, y, color_hex, ...]` (stride 3) or `[x, y, r, g, b, a, ...]` (stride 6, values 0..255 or 0..1). Also accepts parameter alias `flat_pixels`. |
 | `layer` | number \| string | — | Target layer index, layer name, or stable `layer_id` |
 | `frame` | number | — | Target frame index (default: active frame) |
 | `blend` | boolean | — | `true` = alpha blend over existing pixels, `false` = overwrite (default: `false`) |

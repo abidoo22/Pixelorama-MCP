@@ -15,15 +15,16 @@ Always execute drawing tasks in this exact order:
 3. Compute geometry     → in memory (no API calls yet)
 4. Compute shading      → in memory
 5. Compute outlines     → in memory (or call apply_outline)
-6. Flush pixels         → draw_pixels (batched)
-7. Visual inspection    → capture_canvas_image (multimodal vision feedback)
-8. Fit viewport         → fit_viewport
-9. Export to Godot      → export_godot_spriteframes / export_godot_tileset
+6. Flush pixels         → draw_pixels_fast (flat array, 0.02ms/px) or draw_pixels (object array)
+7. Procedural textures  → eval_gdscript (cellular automata, noise, fractal foliage)
+8. Visual inspection    → capture_canvas_image (multimodal vision feedback)
+9. Fit viewport         → fit_viewport
+10. Export to Godot     → export_godot_spriteframes / export_godot_tileset
 ```
 
 > 💡 **Background Execution:** With Pixelorama-MCP's dedicated background thread, Pixelorama processes drawing and export commands even when minimized or running in the background.
 
-> ⛔ **Never call `draw_pixel` one at a time in a loop.** Always use `draw_pixels` with a batch array. A single `draw_pixels` call with 15,000 pixels is approximately 15,000× faster than individual calls.
+> ⚡ **Performance Recommendation:** Always prefer `draw_pixels_fast` with a flat array (`[x,y,col, ...]`) for dense drawing. It executes in engine memory at ~0.02 ms/pixel—over 100× faster than individual calls. For object arrays (`[{x,y,color}, ...]`), use `draw_pixels`.
 
 ---
 
@@ -62,11 +63,11 @@ await cmd("fill_area", { x: 0, y: 0, color: "#191a21" });
 
 **All pixel color decisions happen in memory first.** Never call drawing tools while computing geometry. Build the full grid, then flush once.
 
+### Option A: Ultra-Fast Flat Array (`draw_pixels_fast` — Recommended)
 ```javascript
 const W = 64, H = 64;
 const grid = new Array(W * H).fill(null); // null = transparent
 
-// Helper to write to grid safely
 function px(x, y, color) {
   if (x >= 0 && x < W && y >= 0 && y < H)
     grid[y * W + x] = color;
@@ -74,8 +75,27 @@ function px(x, y, color) {
 
 // ... fill the grid with all your geometry ...
 
-// Flush: collect non-null pixels and send in batches
-async function flush(grid, W, H) {
+// Flush flat array at ~0.02ms/pixel
+async function flushFast(grid, W, H) {
+  const flatData = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const col = grid[y * W + x];
+      if (col !== null) flatData.push(x, y, col);
+    }
+  }
+
+  const STRIDE = 3;
+  const CHUNK_SIZE = 15000 * STRIDE;
+  for (let i = 0; i < flatData.length; i += CHUNK_SIZE) {
+    await cmd("draw_pixels_fast", { data: flatData.slice(i, i + CHUNK_SIZE) });
+  }
+}
+```
+
+### Option B: Object Array (`draw_pixels`)
+```javascript
+async function flushObjects(grid, W, H) {
   const pixels = [];
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++)
@@ -84,10 +104,33 @@ async function flush(grid, W, H) {
 
   for (let i = 0; i < pixels.length; i += BATCH_SIZE) {
     await cmd("draw_pixels", { pixels: pixels.slice(i, i + BATCH_SIZE) });
-    process.stdout.write(`  ${i + BATCH_SIZE > pixels.length ? pixels.length : i + BATCH_SIZE}/${pixels.length}\r`);
   }
-  console.log();
 }
+```
+
+---
+
+## 3B. In-Engine Procedural Scripting (`eval_gdscript`)
+
+For high-density mathematical textures, cellular automata caves, noise fields, and procedural foliage, run GDScript dynamically in-engine:
+
+```javascript
+await cmd("eval_gdscript", {
+  code: `
+    var noise = FastNoiseLite.new()
+    noise.seed = 1337
+    noise.frequency = 0.05
+    for y in range(image.get_height()):
+        for x in range(image.get_width()):
+            var val = noise.get_noise_2d(x, y)
+            if val > 0.1:
+                image.set_pixel(x, y, Color("#2b5329"))
+            else:
+                image.set_pixel(x, y, Color("#1a2b18"))
+    return {"status": "noise_field_complete"}
+  `,
+  params: { seed: 1337 }
+});
 ```
 
 ---
