@@ -6,7 +6,7 @@
  */
 
 const BRIDGE_URL = process.env.PIX_MCP_BRIDGE_URL || "http://127.0.0.1:7373";
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.PIX_MCP_TIMEOUT_MS || "30000", 10) || 30_000;
+const DEFAULT_TIMEOUT_MS = parseInt(process.env.PIX_MCP_TIMEOUT_MS || "120000", 10) || 120_000;
 
 export interface BridgeResponse {
   success: boolean;
@@ -68,7 +68,7 @@ async function _executeHttpCommand(
     if (error instanceof Error && error.name === "AbortError") {
       return {
         success: false,
-        error: `Request timed out after ${effectiveTimeout}ms while executing '${tool}'. The operation may still be processing or completed inside Pixelorama. You can increase timeout via PIX_MCP_TIMEOUT_MS environment variable (e.g. 60000).`,
+        error: `Request timed out after ${effectiveTimeout}ms while executing '${tool}'. NOTE: The operation may have completed or still be processing in Pixelorama (changes may already have been committed). Do not blind-retry without inspecting state with get_pixels or get_canvas_image. Increase PIX_MCP_TIMEOUT_MS if running heavy scripts.`,
       };
     }
 

@@ -194,6 +194,54 @@ await cmd("eval_gdscript", {
 });
 ```
 
+#### Option 3: Arbitrary Structured Data Returns
+Instead of or alongside mutating `image`, `run()` can return arbitrary JSON-serializable types (`Dictionary`, `Array`, `String`, numbers). Pixelorama-MCP formats this directly in the tool response under `Value:`:
+```javascript
+const stats = await cmd("eval_gdscript", {
+  code: `
+    func run(api, image: Image, project, params: Dictionary) -> Dictionary:
+        return { "lit_pixels": 240, "average_luminance": 0.42 }
+  `
+});
+```
+
+### Engine Quirks & Best Practices
+1. **Helper Function Ordering:** Define helper functions *before* `run()` or maintain a linear top-down ordering. Because Godot dynamically parses injected scripts via `GDScript.reload()`, forward calls to functions defined further down in the file can fail parsing.
+2. **Typed Math Functions:** In GDScript 4, when evaluating expressions involving untyped arrays or Variants, prefer typed functions like `maxf()`, `maxi()`, `minf()`, `mini()`, `floorf()`, `roundf()`, or `clampi()` over polymorphic `max()` / `min()`.
+3. **Serialized Queue & Timeout:** The bridge queues commands in a strict FIFO pipeline so operations never race or corrupt the active cel. Default socket and HTTP timeouts are set to 120 seconds. If an operation times out, do not blindly retry — check the canvas state first via `get_pixels` or `capture_canvas_image`.
+4. **Auto-Resize on Returned Image/Buffer:** If `run()` returns an `Image` or `PackedByteArray` whose dimensions differ from the canvas, Pixelorama automatically resizes all cels and camera to match. In v2.5+, the tool returns an explicit warning (`⚠️ Canvas automatically resized from WxH to WxH because returned buffer had different dimensions`) so you are immediately alerted if a test image resized your working canvas.
+
+---
+
+## 3C. Typography & In-Game UI Text (`draw_text`)
+
+Pixelorama-MCP includes a built-in bitmap pixel font engine designed for retro dialogue, title screens, and HUDs. Font scaling follows a discrete integer pixel-art ladder:
+
+| `font_size` Range | Scale Factor | Glyph Height | Char Advance | Line Height | Usage |
+|---|---|---|---|---|---|
+| `4` – `10` | 1× | 5 px | 5 px | 7 px | Subtitles, tiny item labels, HUD counters |
+| `11` – `18` | 2× | 10 px | 10 px | 14 px | Dialogue boxes, card descriptions, inventory |
+| `19` – `26` | 3× | 15 px | 15 px | 21 px | Section headers, card titles |
+| `27` – `34` | 4× | 20 px | 20 px | 28 px | Big titles, "VICTORY", "GAME OVER" |
+| `> 34` | `round(fs/7)` | `scale × 5` px | `scale × 5` px | `scale × 7` px | Giant banners |
+
+> 💡 **Tip:** You can also pass `scale: 1..8` directly (e.g. `scale: 2` for crisp $2\times$ pixel art text) which takes precedence over `font_size`.
+
+- **Measured Bounding Box & Resolved Metrics:** Every `draw_text` call immediately returns the exact ink bounding box and resolved metrics in the tool response:
+  ```json
+  {
+    "scale": 2,
+    "glyph_height": 10,
+    "char_advance": 10,
+    "line_height": 14,
+    "bounding_box": {
+      "left": 10, "top": 10, "right": 54, "bottom": 19,
+      "width": 45, "height": 10, "advance": 48
+    }
+  }
+  ```
+  This eliminates layout guesswork and saves an extra `get_region` roundtrip when centering titles or positioning button labels!
+
 > ⚠️ **CRITICAL RULE — Canvas Size & Restart Safety:**
 > When Pixelorama restarts, the active canvas resets to the default **64×64**.
 > - **Always call `create_canvas(width, height)`** at the start of your drawing session before issuing procedural scripts.

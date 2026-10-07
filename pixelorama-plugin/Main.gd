@@ -69,7 +69,7 @@ func _handle_peer_connection(peer: StreamPeerTCP) -> void:
 	var content_length := 0
 	var header_end_index := -1
 	var start_time := Time.get_ticks_msec()
-	const TIMEOUT_MS := 10000
+	const TIMEOUT_MS := 120000
 
 	while _is_running and peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 		peer.poll()

@@ -117,12 +117,28 @@ export function registerCanvasTools(server: McpServer): void {
 
   server.tool(
     "switch_canvas",
-    "Switch active focus to a different open canvas/project tab by its index.",
+    "Switch active focus to a different open canvas/project tab by its name or 0-based index (e.g. name='Card_Oak', canvas='Card_Oak', or index=0).",
     {
-      index: coerceInt(0).describe("Canvas/project tab index to switch to (0-based)"),
+      name: z.string().optional().describe("Canvas name to switch to (e.g. 'Card_Oak' or 'Sheet')"),
+      canvas: z.union([z.string(), z.number()]).optional().describe("Canvas name or 0-based index to switch to"),
+      index: coerceInt(0).optional().describe("Canvas/project tab index to switch to (0-based)"),
     },
-    async ({ index }) => {
-      const result = await sendCommand("switch_canvas", { index });
+    async ({ name, canvas, index }) => {
+      const payload: Record<string, unknown> = {};
+      if (name !== undefined) payload.name = name;
+      if (canvas !== undefined) payload.canvas = canvas;
+      if (index !== undefined) payload.index = index;
+      if (payload.name === undefined && payload.canvas === undefined && payload.index === undefined) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "❌ Please provide 'name', 'canvas' (name or index), or 'index' to switch_canvas",
+            },
+          ],
+        };
+      }
+      const result = await sendCommand("switch_canvas", payload);
       return {
         content: [
           {
@@ -225,7 +241,7 @@ export function registerCanvasTools(server: McpServer): void {
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Image exported to: ${path}${result.data?.scale && Number(result.data.scale) > 1 ? ` (${result.data.scale}x scale: ${result.data.width}×${result.data.height}px)` : ""}`
+              ? `✅ Image exported to: ${path} (${result.data?.width}×${result.data?.height}px, scale: ${result.data?.scale ?? scale}x)`
               : `❌ ${result.error}`,
           },
         ],

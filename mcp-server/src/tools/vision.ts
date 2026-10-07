@@ -41,6 +41,8 @@ export function registerVisionTools(server: McpServer): void {
         const byteSize = Math.round(((d.base64 as string).length * 3) / 4);
         const regionInfo = d.region ? ` region (${d.region.x},${d.region.y} ${d.region.width}x${d.region.height})` : "";
         const downscaleInfo = d.downscaled ? ` [downscaled to ${d.width}×${d.height}]` : "";
+        const scaleVal = d.scale ?? scale ?? 1;
+        const scaleInfo = `, scale: ${scaleVal}x`;
         return {
           content: [
             {
@@ -50,7 +52,7 @@ export function registerVisionTools(server: McpServer): void {
             },
             {
               type: "text" as const,
-              text: `🖼️ Canvas visual snapshot captured (${d.width}×${d.height} px${regionInfo}${downscaleInfo}, frame ${d.frame}, ~${Math.round(byteSize / 1024)} KB PNG).`,
+              text: `🖼️ Canvas visual snapshot captured (${d.width}×${d.height} px${scaleInfo}${regionInfo}${downscaleInfo}, frame ${d.frame}, ~${Math.round(byteSize / 1024)} KB PNG).`,
             },
           ],
         };

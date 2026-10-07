@@ -378,32 +378,45 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "draw_text",
-    "Render crisp pixel typography / bitmap font directly onto the canvas (essential for dialogue boxes, title screens, damage numbers, and HUDs).",
+    "Render crisp pixel typography / bitmap font directly onto the canvas (essential for dialogue boxes, title screens, damage numbers, and HUDs). Uses a stepped pixel-art scaling ladder (Tier 1: 4-10 -> 1x/5px glyphs, Tier 2: 11-18 -> 2x/10px glyphs, Tier 3: 19-26 -> 3x/15px glyphs, Tier 4: 27-34 -> 4x/20px glyphs) or explicit 'scale' (1..8). Returns resolved metrics (glyph_height, char_advance) and ink bounding box.",
     {
-      text: z.string().describe("Text string to draw"),
-      x: coerceInt().default(0).describe("Starting X position in pixels"),
-      y: coerceInt().default(0).describe("Starting Y position in pixels"),
-      color: z.string().default("#ffffff").describe("Font hex color"),
-      font_size: coerceInt(4, 32).default(8).describe("Font line height in pixels"),
+      text: z.string().describe("Text string to draw (supports newline '\\n')"),
+      x: coerceInt().default(0).describe("Starting top-left X position in pixels"),
+      y: coerceInt().default(0).describe("Starting top-left Y position in pixels"),
+      color: z.string().default("#ffffff").describe("Font hex color (e.g. '#ffffff' or '#e3d0a6')"),
+      font_size: coerceInt(4, 64)
+        .default(8)
+        .describe("Font size ladder (pixels): 4-10 (1x / 5px glyphs), 11-18 (2x / 10px glyphs), 19-26 (3x / 15px glyphs), 27-34 (4x / 20px glyphs), >34 (round(fs/7)). For direct control, pass 'scale' (1..8)"),
+      scale: coerceInt(1, 8)
+        .optional()
+        .describe("Explicit integer pixel scaling factor (1 to 8: 1=5px glyphs, 2=10px glyphs, 3=15px glyphs, etc.). Takes precedence over font_size"),
       layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ text, x, y, color, font_size, layer, frame }) => {
-      const result = await sendCommand("draw_text", {
+    async ({ text, x, y, color, font_size, scale, layer, frame }) => {
+      const payload: Record<string, unknown> = {
         text,
         x,
         y,
         color,
         font_size,
-        layer,
-        frame,
-      });
+      };
+      if (scale !== undefined) payload.scale = scale;
+      if (layer !== undefined) payload.layer = layer;
+      if (frame !== undefined) payload.frame = frame;
+      const result = await sendCommand("draw_text", payload);
+      const d = result.data;
+      const bbox = d?.bounding_box;
+      const metricsStr = d?.scale !== undefined
+        ? ` (scale: ${d.scale}x, glyph_height: ${d.glyph_height ?? d.scale * 5}px, char_advance: ${d.char_advance ?? d.scale * 5}px)`
+        : "";
+      const bboxStr = bbox ? ` [BoundingBox: ${bbox.width}×${bbox.height} at (${bbox.left},${bbox.top}) to (${bbox.right},${bbox.bottom}), advance: ${bbox.advance}px]` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Rendered "${text}" (${result.data?.chars_drawn} characters) at (${x}, ${y}) with color ${color} on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              ? `✅ Rendered "${text}" (${d?.chars_drawn} characters)${metricsStr} at (${x}, ${y}) with color ${color} on [frame:${d?.frame}, layer:${d?.layer}]${bboxStr}`
               : `❌ ${result.error}`,
           },
         ],
@@ -414,7 +427,7 @@ export function registerProceduralTools(server: McpServer): void {
   // ── eval_gdscript ──────────────────────────────────────────────────────────
   server.tool(
     "eval_gdscript",
-    "Execute custom GDScript code natively inside Pixelorama. The script runs with direct access to 'api' (ApiContext with get_pixel, get_layer_image, get_composite_image, get_layers, get_canvas_size, create_image, set_pixel_safe), 'image' (target Cel Image), 'project', and 'params'. HIGH PERFORMANCE BULK WRITES: To avoid slow per-pixel loops, 'run()' can return a PackedByteArray (raw RGBA8/RGB8 bytes) or Image (Image.create(w, h, false, Image.FORMAT_RGBA8) or api.create_image(w, h)) for instant blit commit in < 0.1ms; canvas automatically adapts if dimensions differ. Out-of-bounds 'set_pixel' calls are transparently bounds-checked to guarantee zero crash.",
+    "Execute custom GDScript code natively inside Pixelorama. The script runs with direct access to 'api' (ApiContext with get_pixel, get_layer_image, get_composite_image, get_layers, get_canvas_size, create_image, set_pixel_safe), 'image' (target Cel Image), 'project', and 'params'. HIGH PERFORMANCE BULK WRITES: To avoid slow per-pixel loops, 'run()' can return a PackedByteArray (raw RGBA8/RGB8 bytes) or Image (Image.create(w, h, false, Image.FORMAT_RGBA8) or api.create_image(w, h)) for instant blit commit in < 0.1ms; canvas automatically adapts if dimensions differ. Custom values: 'run()' can also return arbitrary JSON-serializable values (String, Array, Dictionary, int, float, bool) which are returned in 'Value:'. Out-of-bounds 'set_pixel' calls are transparently bounds-checked to guarantee zero crash. NOTE: Forward-order helper functions (define before calling in run()), and use typed maxf()/maxi() rather than untyped max() on Variants.",
     {
       code: z
         .string()
@@ -427,16 +440,18 @@ export function registerProceduralTools(server: McpServer): void {
         .describe("Optional key-value parameters dictionary passed into script (e.g. { width: 320, height: 180 })"),
     },
     async ({ code, layer, frame, params }) => {
-      const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {} }, 60_000);
+      const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {} }, 120_000);
       const resVal = result.data?.result;
+      const val = result.data?.value;
       const resStr = resVal !== undefined ? JSON.stringify(resVal) : "completed";
+      const valStr = val !== null && val !== undefined ? `\nValue: ${typeof val === "object" ? JSON.stringify(val, null, 2) : String(val)}` : "";
       const warnStr = result.data?.warning ? `\n${result.data.warning}` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `⚡ GDScript executed successfully on [frame:${result.data?.frame}, layer:${result.data?.layer}]: ${resStr}${warnStr}`
+              ? `⚡ GDScript executed successfully on [frame:${result.data?.frame}, layer:${result.data?.layer}]: ${resStr}${valStr}${warnStr}`
               : `❌ ${result.error}`,
           },
         ],

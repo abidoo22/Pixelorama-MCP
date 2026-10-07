@@ -96,14 +96,16 @@ Lists all open canvas/project tabs in Pixelorama with full metadata.
 ---
 
 ### `switch_canvas`
-Switches active focus to a different open project tab by its index.
+Switches active focus to a different open project tab by its name or 0-based index.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `index` | number | ✅ | 0-based index of the canvas tab to switch to |
+| `canvas` | string \| number | — | Canvas name or 0-based index to switch to |
+| `name` | string | — | Canvas name to switch to |
+| `index` | number | — | 0-based index of the canvas tab to switch to |
 
 ```json
-{ "success": true, "data": { "active_index": 1, "name": "Dungeon_Tileset", "width": 64, "height": 64 } }
+{ "success": true, "data": { "active_index": 1, "name": "Dungeon_Tileset", "width": 64, "height": 64, "message": "Switched to canvas [1] 'Dungeon_Tileset'" } }
 ```
 
 ---
@@ -135,15 +137,16 @@ Saves the active project to Pixelorama's native `.pxo` file format (preserves al
 ---
 
 ### `export_image`
-Exports a specific frame of the canvas as a PNG image.
+Exports a specific frame of the canvas as a PNG image with optional non-destructive integer scaling (1 to 32x).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | ✅ | Absolute path for output PNG |
 | `frame` | number | — | Frame index (default: `0`) |
+| `scale` | number | — | Non-destructive integer upscale factor (`1` to `32`, default: `1`) |
 
 ```json
-{ "success": true, "data": { "path": "/home/user/output.png", "format": "png" } }
+{ "success": true, "data": { "path": "/home/user/output.png", "width": 256, "height": 256, "scale": 4, "format": "png" } }
 ```
 
 ---
@@ -1039,26 +1042,29 @@ Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides 
   - `api.get_canvas_size()` — Returns `Vector2i` dimensions of the canvas.
   - `api.create_image(w, h)` — Creates a new RGBA8 `Image` initialized to the canvas size or custom dimensions.
   - `api.set_pixel_safe(image, x, y, color)` — Safe bounds-guarded pixel setter returning `bool`.
-- **Auto-fallback on Type Inference**: Automatically converts `var x := ...` to `var x = ...` if Godot 4's static type inference on Variant expressions fails.
-- **Pinpoint Error Reporting**: Returns the exact line number, column, and code snippet for both compile and runtime errors.
+- **Arbitrary Custom Return Values**: `run()` can return arbitrary JSON-serializable types (`String`, `Array`, `Dictionary`, `int`, `float`, `bool`). The return value is printed under `Value:` in the response.
+- **Canvas Auto-Resize Warning**: If `run()` returns an `Image` or `PackedByteArray` with dimensions differing from the canvas, Pixelorama automatically resizes all cels and emits an explicit warning (`⚠️ Canvas automatically resized from WxH to WxH because returned buffer had different dimensions`) in the response so callers are immediately alerted.
+- **Engine Quirks & Best Practices**:
+  - **Function ordering**: Declare helper functions before calling them in `run()`, or keep script structure linear (Godot dynamic `reload()` parser quirk).
+  - **Typed math functions**: Use `maxf()` / `maxi()` instead of generic `max()` when operands involve Variant expressions.
+- **Serialized FIFO Execution & 120s Timeout**: All bridge operations are strictly serialized via a FIFO command queue to guarantee thread-safety and eliminate race conditions. Timeout is 120,000ms.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `code` | string | ✅ | GDScript code to execute. Can define `func run(api, image: Image, project, params: Dictionary)` (returning `Image`, `PackedByteArray`, or `Variant`) or provide bare statements mutating `image` |
+| `code` | string | ✅ | GDScript code to execute. Can define `func run(api, image: Image, project, params: Dictionary)` (returning `Image`, `PackedByteArray`, or arbitrary JSON-serializable `Variant`) or provide bare statements mutating `image` |
 | `layer` | number \| string | — | Target layer index, name, or stable `layer_id` (defaults to active layer) |
 | `frame` | number | — | Target frame index (defaults to active frame) |
 | `params` | object | — | Optional custom dictionary passed into the script |
 
 ```gdscript
-# Example 1: Cross-layer reflection pass (Lake sampling Sky)
-func run(api, image: Image, project, params: Dictionary):
-    var sky_img = api.get_layer_image("Sky")
+# Example 1: Custom Dictionary return (stats & counts)
+func run(api, image: Image, project, params: Dictionary) -> Dictionary:
+    var lit_count = 0
     for y in range(image.get_height()):
-        var sky_y = clamp(image.get_height() - y - 1, 0, sky_img.get_height() - 1)
         for x in range(image.get_width()):
-            var sky_col = sky_img.get_pixel(x, sky_y)
-            image.set_pixel(x, y, sky_col.lerp(Color("#003366"), 0.4))
-    return "reflection complete"
+            if image.get_pixel(x, y).a > 0.0:
+                lit_count += 1
+    return { "lit_pixels": lit_count, "coverage": float(lit_count) / float(image.get_width() * image.get_height()) }
 
 # Example 2: Bulk Image return (creates and returns a new Image directly)
 func run(api, image: Image, project, params: Dictionary) -> Image:
@@ -1075,7 +1081,42 @@ Verify and auto-fix tile wrap-around border seams.
 ---
 
 ### `draw_text`
-Render crisp bitmap pixel typography directly onto the canvas.
+Render crisp bitmap pixel typography directly onto the canvas. Supports integer scaling (`scale: 1..8`) and auto-scaling from `font_size`. Returns exact ink bounding box `{ left, top, right, bottom, width, height, advance }` as well as resolved metrics (`scale`, `glyph_height`, `char_advance`, `line_height`) to enable pixel-perfect alignment without extra probes.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `text` | string | — | Text string to render (supports `\n` newlines) |
+| `x` | number | `0` | Starting top-left X position in pixels |
+| `y` | number | `0` | Starting top-left Y position in pixels |
+| `color` | string | `#ffffff` | Font hex color |
+| `scale` | number | — | Explicit integer pixel scaling factor (`1` to `8`). Takes precedence over `font_size` |
+| `font_size` | number | `8` | Font size ladder in pixels (`4` to `64`). Auto-maps: $4..10 \rightarrow 1\times$ (5px glyphs), $11..18 \rightarrow 2\times$ (10px glyphs), $19..26 \rightarrow 3\times$ (15px glyphs), $27..34 \rightarrow 4\times$ (20px glyphs), $> 34 \rightarrow \text{round}(fs/7)$ |
+| `layer` | number \| string | — | Target layer index or name |
+| `frame` | number | current | Target frame index |
+
+```json
+{
+  "success": true,
+  "data": {
+    "text": "GAME OVER",
+    "chars_drawn": 9,
+    "scale": 2,
+    "glyph_height": 10,
+    "char_advance": 10,
+    "line_height": 14,
+    "pos": [16, 24],
+    "bounding_box": {
+      "left": 16,
+      "top": 24,
+      "right": 104,
+      "bottom": 33,
+      "width": 89,
+      "height": 10,
+      "advance": 90
+    }
+  }
+}
+```
 
 ---
 

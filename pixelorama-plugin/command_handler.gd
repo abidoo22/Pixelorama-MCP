@@ -491,11 +491,49 @@ func _cmd_list_canvases(_params: Dictionary) -> Dictionary:
 
 
 func _cmd_switch_canvas(params: Dictionary) -> Dictionary:
-	var target_index: int = int(params.get("index", 0))
 	var global = _api.get_node_or_null("/root/Global")
+	var target_index: int = -1
 
 	if global and "projects" in global:
 		var projects_arr: Array = global.projects
+		var explicit_name: String = str(params.get("name", "")).strip_edges()
+		var canvas_param = params.get("canvas", null)
+
+		# 1. Search by explicit name
+		if explicit_name != "":
+			for i in range(projects_arr.size()):
+				if projects_arr[i].name == explicit_name or projects_arr[i].name.to_lower() == explicit_name.to_lower():
+					target_index = i
+					break
+			if target_index == -1:
+				return {
+					"success": false,
+					"error": "Canvas with name '%s' not found among %d open canvas(es)" % [explicit_name, projects_arr.size()]
+				}
+
+		# 2. Search by 'canvas' string or number
+		elif canvas_param != null:
+			var canvas_str := str(canvas_param).strip_edges()
+			# Try matching by name first, even if string contains numbers
+			for i in range(projects_arr.size()):
+				if projects_arr[i].name == canvas_str or projects_arr[i].name.to_lower() == canvas_str.to_lower():
+					target_index = i
+					break
+			if target_index == -1:
+				if canvas_str.is_valid_int():
+					target_index = int(canvas_str)
+				else:
+					return {
+						"success": false,
+						"error": "Canvas '%s' not found among %d open canvas(es)" % [canvas_str, projects_arr.size()]
+					}
+
+		# 3. Use 'index' parameter
+		elif params.has("index"):
+			target_index = int(params["index"])
+		else:
+			target_index = 0
+
 		if target_index < 0 or target_index >= projects_arr.size():
 			return {
 				"success": false,
@@ -833,12 +871,14 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 	var crop_w: int = int(params.get("width", orig_w - crop_x))
 	var crop_h: int = int(params.get("height", orig_h - crop_y))
 
+	var applied_region = null
 	if has_region:
 		var rect := Rect2i(crop_x, crop_y, crop_w, crop_h).intersection(Rect2i(0, 0, orig_w, orig_h))
 		if rect.has_area():
 			var sub_img := Image.create_empty(rect.size.x, rect.size.y, false, img.get_format())
 			sub_img.blit_rect(img, rect, Vector2i.ZERO)
 			img = sub_img
+			applied_region = {"x": rect.position.x, "y": rect.position.y, "width": rect.size.x, "height": rect.size.y}
 		else:
 			return {"success": false, "error": "Specified region [x:%d, y:%d, w:%d, h:%d] does not intersect canvas" % [crop_x, crop_y, crop_w, crop_h]}
 
@@ -867,6 +907,8 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 
 	var png_buffer := img.save_png_to_buffer()
 	var b64 := Marshalls.raw_to_base64(png_buffer)
+	var sc_val: float = float(params.get("scale", 1.0))
+	var is_downscaled: bool = (cur_w < orig_w or cur_h < orig_h)
 	return {
 		"success": true,
 		"data": {
@@ -875,7 +917,10 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 			"height": cur_h,
 			"original_width": orig_w,
 			"original_height": orig_h,
-			"frame": frame_idx
+			"frame": frame_idx,
+			"scale": sc_val,
+			"downscaled": is_downscaled,
+			"region": applied_region
 		}
 	}
 
@@ -4476,6 +4521,24 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 	if text.is_empty():
 		return {"success": false, "error": "Missing 'text' parameter"}
 
+	var effective_scale := 1
+	if params.has("scale"):
+		effective_scale = maxi(1, int(params["scale"]))
+	elif params.has("font_size"):
+		var fs: int = int(params["font_size"])
+		if fs <= 10:
+			effective_scale = 1
+		elif fs <= 18:
+			effective_scale = 2
+		elif fs <= 26:
+			effective_scale = 3
+		elif fs <= 34:
+			effective_scale = 4
+		else:
+			effective_scale = maxi(1, int(roundf(float(fs) / 7.0)))
+
+	var line_step := maxi(7 * effective_scale, font_size)
+
 	var text_col := Color.html(col_hex) if Color.html_is_valid(col_hex) else Color.WHITE
 	var img: Image = target.image
 
@@ -4483,31 +4546,59 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 	var cur_y := start_y
 	var chars_drawn := 0
 
+	var min_x := 999999
+	var min_y := 999999
+	var max_x := -999999
+	var max_y := -999999
+	var has_ink := false
+
 	for ch in text:
 		if ch == '\n':
 			cur_x = start_x
-			cur_y += font_size + 2
+			cur_y += line_step
 			continue
 
 		var glyph_matrix = _get_bitmap_glyph(ch)
 		for gy in range(glyph_matrix.size()):
 			for gx in range(glyph_matrix[gy].size()):
 				if glyph_matrix[gy][gx] == 1:
-					var px := cur_x + gx
-					var py := cur_y + gy
-					if px >= 0 and px < img.get_width() and py >= 0 and py < img.get_height():
-						img.set_pixel(px, py, text_col)
-		cur_x += glyph_matrix[0].size() + 1
+					for by in range(effective_scale):
+						for bx in range(effective_scale):
+							var px := cur_x + gx * effective_scale + bx
+							var py := cur_y + gy * effective_scale + by
+							if px < min_x: min_x = px
+							if py < min_y: min_y = py
+							if px > max_x: max_x = px
+							if py > max_y: max_y = py
+							has_ink = true
+							if px >= 0 and px < img.get_width() and py >= 0 and py < img.get_height():
+								img.set_pixel(px, py, text_col)
+		cur_x += (glyph_matrix[0].size() + 1) * effective_scale
 		chars_drawn += 1
 
 	_commit_image_change(img, "Draw Text", target.frame, target.layer)
+
+	var bbox := {
+		"left": min_x if has_ink else start_x,
+		"top": min_y if has_ink else start_y,
+		"right": max_x if has_ink else start_x,
+		"bottom": max_y if has_ink else start_y,
+		"width": (max_x - min_x + 1) if has_ink else 0,
+		"height": (max_y - min_y + 1) if has_ink else 0,
+		"advance": cur_x - start_x
+	}
 
 	return {
 		"success": true,
 		"data": {
 			"text": text,
 			"chars_drawn": chars_drawn,
+			"scale": effective_scale,
+			"glyph_height": 5 * effective_scale,
+			"char_advance": 5 * effective_scale,
+			"line_height": line_step,
 			"pos": [start_x, start_y],
+			"bounding_box": bbox,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -5387,8 +5478,12 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 				err = OK
 
 	if err != OK:
+		OS.delay_msec(25)
 		var log_tail := _extract_godot_log_tail(log_pos_before_compile)
 		var parse_err := _extract_compile_error_from_log(log_tail, full_source)
+		if parse_err == "":
+			log_tail = _extract_godot_log_tail(-1)
+			parse_err = _extract_compile_error_from_log(log_tail, full_source)
 		var err_str := "Failed to compile GDScript (Error code %d)" % err
 		if parse_err != "":
 			err_str = "Failed to compile GDScript: %s" % parse_err
@@ -5463,10 +5558,14 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	if instance.get("_clipped_pixel_count") != null:
 		clipped_pixels = int(instance.get("_clipped_pixel_count"))
 
+	var resized_canvas := false
+	var prev_size = project.size if project != null else Vector2i.ZERO
+
 	if result is Image:
 		if result.get_size() != project.size:
 			var new_w: int = int(result.get_width())
 			var new_h: int = int(result.get_height())
+			resized_canvas = true
 			for f in project.frames:
 				for cel in f.cels:
 					if cel.get_class_name() == "PixelCel":
@@ -5489,6 +5588,7 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 				w = pw
 				h = ph
 				if Vector2i(w, h) != project.size:
+					resized_canvas = true
 					for f in project.frames:
 						for cel in f.cels:
 							if cel.get_class_name() == "PixelCel":
@@ -5534,12 +5634,26 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 
 	var result_data := {
 		"result": result_repr,
+		"value": result if not (result is Image or result is PackedByteArray) else null,
 		"frame": frame_idx,
 		"layer": layer_idx
 	}
+	if resized_canvas:
+		result_data["canvas_resized"] = true
+		result_data["previous_size"] = [int(prev_size.x), int(prev_size.y)]
+		result_data["new_size"] = [int(project.size.x), int(project.size.y)]
+		var resize_warn := "⚠️ Canvas automatically resized from %dx%d to %dx%d because returned buffer had different dimensions." % [int(prev_size.x), int(prev_size.y), int(project.size.x), int(project.size.y)]
+		if result_data.has("warning"):
+			result_data["warning"] += "\n" + resize_warn
+		else:
+			result_data["warning"] = resize_warn
 	if clipped_pixels > 0:
 		result_data["clipped_pixels"] = clipped_pixels
-		result_data["warning"] = "⚠️ %d pixel writes were clipped outside canvas bounds (%dx%d). Use 'create_canvas' to expand canvas dimensions if you intended a larger drawing area!" % [clipped_pixels, int(project.size.x), int(project.size.y)]
+		var clip_warn := "⚠️ %d pixel writes were clipped outside canvas bounds (%dx%d). Use 'create_canvas' to expand canvas dimensions if you intended a larger drawing area!" % [clipped_pixels, int(project.size.x), int(project.size.y)]
+		if result_data.has("warning"):
+			result_data["warning"] += "\n" + clip_warn
+		else:
+			result_data["warning"] = clip_warn
 		if result_repr == null or str(result_repr) == "ok" or str(result_repr) == "":
 			result_data["result"] = "⚠️ %d pixels clipped outside canvas bounds (%dx%d)" % [clipped_pixels, int(project.size.x), int(project.size.y)]
 		else:
