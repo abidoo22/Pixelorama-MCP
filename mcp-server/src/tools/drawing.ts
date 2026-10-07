@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceBool, safeJsonArray } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, safeJsonArray, safePointsArray, layerHandleSchema, fastFlatArraySchema } from "../utils/schema_helpers.js";
 
 export function registerDrawingTools(server: McpServer): void {
   // ── undo ────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ export function registerDrawingTools(server: McpServer): void {
     {
       x: coerceInt().describe("X coordinate"),
       y: coerceInt().describe("Y coordinate"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ x, y, layer, frame }) => {
@@ -127,7 +127,7 @@ export function registerDrawingTools(server: McpServer): void {
         }),
         1
       ).describe("Array of coordinate objects [{x, y}, ...]"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ coords, layer, frame }) => {
@@ -163,7 +163,7 @@ export function registerDrawingTools(server: McpServer): void {
       y: coerceInt().default(0).describe("Top-left Y coordinate"),
       width: coerceInt(1, 512).default(16).describe("Width of region (max 512)"),
       height: coerceInt(1, 512).default(16).describe("Height of region (max 512)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ x, y, width, height, layer, frame }) => {
@@ -193,7 +193,7 @@ export function registerDrawingTools(server: McpServer): void {
       dx: coerceInt().describe("Horizontal shift in pixels (+ right, - left)"),
       dy: coerceInt().describe("Vertical shift in pixels (+ down, - up)"),
       wrap_around: coerceBool().default(false).describe("If true, pixels shifted off one edge wrap to the opposite edge (useful for seamless textures)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ dx, dy, wrap_around, layer, frame }) => {
@@ -217,7 +217,7 @@ export function registerDrawingTools(server: McpServer): void {
     "Rotate all pixels on a cel in 90-degree increments (90, 180, 270).",
     {
       angle: coerceInt().describe("Rotation angle in degrees (90, 180, or 270)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ angle, layer, frame }) => {
@@ -245,14 +245,17 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Pixel color as hex string (e.g. '#FF5733', '#00FF00FF')"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with the existing pixel instead of overwriting (useful for translucent effects)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color, blend, layer, frame }) => {
-      const result = await sendCommand("draw_pixel", { x, y, color, blend, layer, frame });
+    async ({ x, y, color, alpha, blend, layer, frame }) => {
+      const result = await sendCommand("draw_pixel", { x, y, color, alpha, blend, layer, frame });
       if (result.success && result.data) {
         const clipped = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ clipped outside canvas)` : "";
         return {
@@ -282,19 +285,23 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Line color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x1, y1, x2, y2, color, blend, layer, frame }) => {
+    async ({ x1, y1, x2, y2, color, alpha, blend, layer, frame }) => {
       const result = await sendCommand("draw_line", {
         x1,
         y1,
         x2,
         y2,
         color,
+        alpha,
         blend,
         layer,
         frame,
@@ -328,22 +335,26 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Rectangle color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the rectangle; if false, draw outline only"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, width, height, color, filled, blend, layer, frame }) => {
+    async ({ x, y, width, height, color, alpha, filled, blend, layer, frame }) => {
       const result = await sendCommand("draw_rect", {
         x,
         y,
         width,
         height,
         color,
+        alpha,
         filled,
         blend,
         layer,
@@ -378,22 +389,26 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Ellipse color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the ellipse; if false, draw outline only"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ cx, cy, rx, ry, color, filled, blend, layer, frame }) => {
+    async ({ cx, cy, rx, ry, color, alpha, filled, blend, layer, frame }) => {
       const result = await sendCommand("draw_ellipse", {
         cx,
         cy,
         rx,
         ry,
         color,
+        alpha,
         filled,
         blend,
         layer,
@@ -426,14 +441,17 @@ export function registerDrawingTools(server: McpServer): void {
       color: z
         .string()
         .describe("Fill color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, color, blend, layer, frame }) => {
-      const result = await sendCommand("fill_area", { x, y, color, blend, layer, frame });
+    async ({ x, y, color, alpha, blend, layer, frame }) => {
+      const result = await sendCommand("fill_area", { x, y, color, alpha, blend, layer, frame });
       return {
         content: [
           {
@@ -450,31 +468,106 @@ export function registerDrawingTools(server: McpServer): void {
   // ── draw_pixels ─────────────────────────────────────────────────────
   server.tool(
     "draw_pixels",
-    "Batch draw multiple pixels in a single operation. Much faster than calling draw_pixel repeatedly. All pixels are committed as a single undoable action. Use this for complex shapes, sprite art, or any multi-pixel drawing.",
+    "Batch draw multiple pixels in a single operation. Much faster than calling draw_pixel repeatedly. All pixels are committed as a single undoable action. Accepts either an array of pixel objects [{x,y,color}, ...] or a flat array [x,y,color,...] via 'data' or 'flat_pixels'.",
     {
       pixels: safeJsonArray(
         z.object({
           x: coerceInt().describe("X coordinate"),
           y: coerceInt().describe("Y coordinate"),
           color: z.string().describe("Pixel color as hex string"),
+          alpha: coerceFloat().optional().describe("Optional alpha opacity"),
         }),
         1
-      ).describe("Array of pixel objects, each with x, y, and color"),
+      )
+        .optional()
+        .describe("Array of pixel objects, each with x, y, and color"),
+      flat_pixels: fastFlatArraySchema
+        .optional()
+        .describe("Optional high-throughput flat array [x, y, color, x, y, color, ...] (stride 3)"),
+      data: fastFlatArraySchema
+        .optional()
+        .describe("Alias for flat_pixels: flat array of coordinates and colors [x, y, color, ...]"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ pixels, blend, layer, frame }) => {
-      const result = await sendCommand("draw_pixels", { pixels, blend, layer, frame });
+    async ({ pixels, flat_pixels, data, blend, layer, frame }) => {
+      const payload: Record<string, unknown> = { blend, layer, frame };
+      const flat = data ?? flat_pixels;
+      if (flat && flat.length > 0) {
+        payload.flat_pixels = flat;
+      } else if (pixels && pixels.length > 0) {
+        payload.pixels = pixels;
+      } else {
+        return { content: [{ type: "text" as const, text: "❌ Either 'pixels', 'flat_pixels', or 'data' must be provided." }] };
+      }
+
+      const result = await sendCommand("draw_pixels", payload);
       if (result.success && result.data) {
-        const clippedInfo = Number(result.data.skipped) > 0 ? ` (${result.data.skipped} skipped/clipped)` : "";
+        const clippedInfo = Number(result.data.skipped ?? result.data.pixels_clipped) > 0 ? ` (${result.data.skipped ?? result.data.pixels_clipped} skipped/clipped)` : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Batch draw: ${result.data.drawn} pixels drawn${clippedInfo} (${result.data.total} total) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+              text: `✅ Batch draw: ${result.data.drawn ?? result.data.pixels_drawn} pixels drawn${clippedInfo} (${result.data.total ?? ""} total) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+            },
+          ],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `❌ ${result.error}` }],
+      };
+    }
+  );
+
+  // ── draw_pixels_fast ────────────────────────────────────────────────
+  server.tool(
+    "draw_pixels_fast",
+    "High-throughput batch pixel drawing tool for large procedural passes (10x-50x faster than object arrays). Accepts a flat array of numbers and hex strings with zero per-pixel object allocation overhead. RECOMMENDED: Stride 3 [x, y, '#hex', ...] for optimal network and cache speed. Also supports Stride 6: [x, y, r, g, b, a, ...]. Safe batch limit is 300,000 elements (~100k pixels). Note: For object arrays [{x,y,color},...], use 'draw_pixels'.",
+    {
+      data: fastFlatArraySchema
+        .optional()
+        .describe("Flat array of coordinates and colors. Recommended Stride 3 format: [x, y, color, ...] or Stride 6 format: [x, y, r, g, b, a, ...]"),
+      flat_pixels: fastFlatArraySchema
+        .optional()
+        .describe("Alias for data: flat array of coordinates and colors"),
+      pixels: z.any()
+        .optional()
+        .describe("Object arrays are not supported in draw_pixels_fast; use 'draw_pixels' instead."),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends with existing pixels instead of overwriting"),
+      layer: layerHandleSchema,
+      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ data, flat_pixels, pixels, blend, layer, frame }) => {
+      if (pixels !== undefined) {
+        if (Array.isArray(pixels) && pixels.length > 0 && typeof pixels[0] === "object" && pixels[0] !== null) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "❌ 'draw_pixels_fast' requires a flat array of numbers and strings (via 'data' or 'flat_pixels'). For object arrays [{x,y,color}, ...], use 'draw_pixels'.",
+              },
+            ],
+          };
+        }
+      }
+
+      const flat = data ?? flat_pixels ?? (Array.isArray(pixels) ? pixels : undefined);
+      if (!flat || flat.length === 0) {
+        return { content: [{ type: "text" as const, text: "❌ Missing flat pixel array in 'data' (or 'flat_pixels')." }] };
+      }
+      const result = await sendCommand("draw_pixels_fast", { data: flat, blend, layer, frame });
+      if (result.success && result.data) {
+        const clippedInfo = Number(result.data.skipped ?? result.data.pixels_clipped) > 0 ? ` (${result.data.skipped ?? result.data.pixels_clipped} skipped/clipped)` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `⚡ Fast batch draw: ${result.data.drawn ?? result.data.pixels_drawn} pixels drawn${clippedInfo} on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };
@@ -535,27 +628,24 @@ export function registerDrawingTools(server: McpServer): void {
     "draw_path",
     "Draw a continuous multi-segment line through an array of points in order.",
     {
-      points: safeJsonArray(
-        z.object({
-          x: coerceInt().describe("X coordinate"),
-          y: coerceInt().describe("Y coordinate"),
-        }),
-        2
-      ).describe("Array of points to connect with lines [{x, y}, ...]"),
+      points: safePointsArray(2).describe("Array of points to connect with lines [{x, y}, ...]"),
       color: z
         .string()
         .describe("Line color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       closed: coerceBool()
         .default(false)
         .describe("If true, connect the last point back to the first"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, closed, blend, layer, frame }) => {
-      const result = await sendCommand("draw_path", { points, color, closed, blend, layer, frame });
+    async ({ points, color, alpha, closed, blend, layer, frame }) => {
+      const result = await sendCommand("draw_path", { points, color, alpha, closed, blend, layer, frame });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
         return {
@@ -578,27 +668,24 @@ export function registerDrawingTools(server: McpServer): void {
     "draw_polygon",
     "Draw a polygon from an array of vertices. Can be filled or outline only.",
     {
-      points: safeJsonArray(
-        z.object({
-          x: coerceInt().describe("X coordinate"),
-          y: coerceInt().describe("Y coordinate"),
-        }),
-        3
-      ).describe("Array of vertices [{x, y}, ...] (minimum 3)"),
+      points: safePointsArray(3).describe("Array of vertices [{x, y}, ...] (minimum 3)"),
       color: z
         .string()
         .describe("Polygon color as hex string"),
+      alpha: coerceFloat()
+        .optional()
+        .describe("Optional alpha opacity: 0.0 to 1.0 or 0 to 255 (modulates or overrides color alpha)"),
       filled: coerceBool()
         .default(true)
         .describe("If true, fill the polygon; if false, draw outline only"),
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ points, color, filled, blend, layer, frame }) => {
-      const result = await sendCommand("draw_polygon", { points, color, filled, blend, layer, frame });
+    async ({ points, color, alpha, filled, blend, layer, frame }) => {
+      const result = await sendCommand("draw_polygon", { points, color, alpha, filled, blend, layer, frame });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (${result.data.pixels_clipped} px clipped)` : "";
         return {

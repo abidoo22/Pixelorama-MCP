@@ -50,6 +50,7 @@ func _register_tools() -> void:
 	_tool_registry["redo"] = Callable(self, "_cmd_redo")
 	_tool_registry["draw_pixel"] = Callable(self, "_cmd_draw_pixel")
 	_tool_registry["draw_pixels"] = Callable(self, "_cmd_draw_pixels")
+	_tool_registry["draw_pixels_fast"] = Callable(self, "_cmd_draw_pixels_fast")
 	_tool_registry["draw_rect"] = Callable(self, "_cmd_draw_rect")
 	_tool_registry["draw_line"] = Callable(self, "_cmd_draw_line")
 	_tool_registry["draw_path"] = Callable(self, "_cmd_draw_path")
@@ -65,6 +66,7 @@ func _register_tools() -> void:
 	_tool_registry["mirror_layer"] = Callable(self, "_cmd_mirror_layer")
 	_tool_registry["transform_cel"] = Callable(self, "_cmd_transform_cel")
 	_tool_registry["rotate_cel"] = Callable(self, "_cmd_rotate_cel")
+	_tool_registry["eval_gdscript"] = Callable(self, "_cmd_eval_gdscript")
 
 	# Inspection & QA
 	_tool_registry["get_pixel"] = Callable(self, "_cmd_get_pixel")
@@ -152,20 +154,84 @@ func execute(tool_name: String, params: Dictionary) -> Dictionary:
 # SHARED HELPERS
 # ─────────────────────────────────────────────
 
+func _get_or_create_layer_id(layer: Object) -> String:
+	if layer == null:
+		return ""
+	if layer.has_meta("mcp_layer_id"):
+		return str(layer.get_meta("mcp_layer_id"))
+	var new_id := "layer_%s_%s" % [str(layer.get_instance_id()), str(Time.get_ticks_msec())]
+	layer.set_meta("mcp_layer_id", new_id)
+	return new_id
+
+
+func _resolve_layer_index(params: Dictionary, project = null) -> int:
+	if project == null:
+		project = _api.project.current_project
+	if project == null:
+		return -1
+
+	# Priority 1: layer_id (stable handle)
+	if params.has("layer_id"):
+		var target_id: String = str(params["layer_id"]).strip_edges()
+		for i in range(project.layers.size()):
+			var lyr = project.layers[i]
+			if _get_or_create_layer_id(lyr) == target_id:
+				return i
+
+	# Priority 2: layer_name
+	if params.has("layer_name"):
+		var target_name: String = str(params["layer_name"]).strip_edges()
+		for i in range(project.layers.size()):
+			if project.layers[i].name == target_name:
+				return i
+
+	# Priority 3: index parameter (may be integer or string name/id)
+	if params.has("index"):
+		var val = params["index"]
+		if typeof(val) == TYPE_STRING:
+			var s: String = str(val).strip_edges()
+			for i in range(project.layers.size()):
+				if _get_or_create_layer_id(project.layers[i]) == s or project.layers[i].name == s:
+					return i
+			if s.is_valid_int():
+				return int(s)
+		else:
+			return int(val)
+
+	# Priority 4: layer parameter (may be integer or string name/id)
+	if params.has("layer"):
+		var val = params["layer"]
+		if typeof(val) == TYPE_STRING:
+			var s: String = str(val).strip_edges()
+			for i in range(project.layers.size()):
+				if _get_or_create_layer_id(project.layers[i]) == s or project.layers[i].name == s:
+					return i
+			if s.is_valid_int():
+				return int(s)
+		else:
+			return int(val)
+
+	return project.current_layer
+
+
 func _get_active_cursor_info(project = null) -> Dictionary:
 	if project == null:
 		project = _api.project.current_project
 	if project == null:
-		return {"frame": 0, "layer": 0, "layer_name": ""}
+		return {"frame": 0, "layer": 0, "layer_name": "", "layer_id": ""}
 	var frame_idx: int = project.current_frame
 	var layer_idx: int = project.current_layer
 	var layer_name := ""
+	var layer_id := ""
 	if layer_idx >= 0 and layer_idx < project.layers.size():
-		layer_name = project.layers[layer_idx].name
+		var lyr = project.layers[layer_idx]
+		layer_name = lyr.name
+		layer_id = _get_or_create_layer_id(lyr)
 	return {
 		"frame": frame_idx,
 		"layer": layer_idx,
-		"layer_name": layer_name
+		"layer_name": layer_name,
+		"layer_id": layer_id
 	}
 
 
@@ -189,12 +255,12 @@ func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
 		return {"error": "No active project", "image": null, "frame": 0, "layer": 0}
 
 	var frame_idx: int = int(params.get("frame", project.current_frame))
-	var layer_idx: int = int(params.get("layer", project.current_layer))
+	var layer_idx: int = _resolve_layer_index(params, project)
 
 	if frame_idx < 0 or frame_idx >= project.frames.size():
 		return {"error": "Frame index out of bounds: %d (0..%d)" % [frame_idx, project.frames.size() - 1], "image": null, "frame": frame_idx, "layer": layer_idx}
 	if layer_idx < 0 or layer_idx >= project.layers.size():
-		return {"error": "Layer index out of bounds: %d (0..%d)" % [layer_idx, project.layers.size() - 1], "image": null, "frame": frame_idx, "layer": layer_idx}
+		return {"error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer_id", params.get("layer_name", params.get("layer", layer_idx)))), project.layers.size() - 1], "image": null, "frame": frame_idx, "layer": layer_idx}
 
 	var cel = project.frames[frame_idx].cels[layer_idx]
 	if cel == null or cel.get_class_name() != "PixelCel":
@@ -280,13 +346,26 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 
 func _parse_color(params: Dictionary, key: String = "color", default_color: Color = Color.BLACK) -> Color:
 	var color_val = params.get(key, "")
+	var c := default_color
 	if color_val is String and color_val != "":
 		if Color.html_is_valid(color_val):
-			return Color.html(color_val)
+			c = Color.html(color_val)
 		else:
 			push_warning(LOG_TAG + "Invalid color hex: '%s', using default" % color_val)
-			return default_color
-	return default_color
+	elif color_val is Color:
+		c = color_val
+
+	# B6: Support explicit "alpha" parameter (0..255 or 0.0..1.0)
+	if params.has("alpha"):
+		var a_val = params["alpha"]
+		if typeof(a_val) == TYPE_INT or typeof(a_val) == TYPE_FLOAT:
+			var a_num: float = float(a_val)
+			if a_num > 1.0:
+				c.a = clampf(a_num / 255.0, 0.0, 1.0)
+			else:
+				c.a = clampf(a_num, 0.0, 1.0)
+
+	return c
 
 
 # ─────────────────────────────────────────────
@@ -731,9 +810,48 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 	if frame_idx < 0 or frame_idx >= project.frames.size():
 		return {"success": false, "error": "Frame index out of bounds"}
 
-	var w := int(project.size.x)
-	var h := int(project.size.y)
+	var orig_w := int(project.size.x)
+	var orig_h := int(project.size.y)
 	var img := _composite_frame_layers(project, frame_idx)
+
+	# Region cropping (x, y, width, height)
+	var has_region := params.has("x") or params.has("y") or params.has("width") or params.has("height")
+	var crop_x: int = int(params.get("x", 0))
+	var crop_y: int = int(params.get("y", 0))
+	var crop_w: int = int(params.get("width", orig_w - crop_x))
+	var crop_h: int = int(params.get("height", orig_h - crop_y))
+
+	if has_region:
+		var rect := Rect2i(crop_x, crop_y, crop_w, crop_h).intersection(Rect2i(0, 0, orig_w, orig_h))
+		if rect.has_area():
+			var sub_img := Image.create_empty(rect.size.x, rect.size.y, false, img.get_format())
+			sub_img.blit_rect(img, rect, Vector2i.ZERO)
+			img = sub_img
+		else:
+			return {"success": false, "error": "Specified region [x:%d, y:%d, w:%d, h:%d] does not intersect canvas" % [crop_x, crop_y, crop_w, crop_h]}
+
+	# Scale down if scale or max_size is set
+	var cur_w := img.get_width()
+	var cur_h := img.get_height()
+
+	if params.has("scale"):
+		var sc: float = float(params["scale"])
+		if sc > 0.0 and sc < 1.0:
+			var target_w := maxi(1, int(roundf(cur_w * sc)))
+			var target_h := maxi(1, int(roundf(cur_h * sc)))
+			img.resize(target_w, target_h, Image.INTERPOLATE_NEAREST)
+			cur_w = target_w
+			cur_h = target_h
+
+	if params.has("max_size"):
+		var max_s: int = int(params["max_size"])
+		if max_s > 0 and (cur_w > max_s or cur_h > max_s):
+			var ratio := float(max_s) / maxf(float(cur_w), float(cur_h))
+			var target_w := maxi(1, int(roundf(cur_w * ratio)))
+			var target_h := maxi(1, int(roundf(cur_h * ratio)))
+			img.resize(target_w, target_h, Image.INTERPOLATE_NEAREST)
+			cur_w = target_w
+			cur_h = target_h
 
 	var png_buffer := img.save_png_to_buffer()
 	var b64 := Marshalls.raw_to_base64(png_buffer)
@@ -741,8 +859,10 @@ func _cmd_get_canvas_image_base64(params: Dictionary) -> Dictionary:
 		"success": true,
 		"data": {
 			"base64": b64,
-			"width": w,
-			"height": h,
+			"width": cur_w,
+			"height": cur_h,
+			"original_width": orig_w,
+			"original_height": orig_h,
 			"frame": frame_idx
 		}
 	}
@@ -940,12 +1060,75 @@ func _cmd_redo(_params: Dictionary) -> Dictionary:
 func _put_pixel(image: Image, x: int, y: int, color: Color, blend: bool = false) -> void:
 	if x < 0 or x >= image.get_width() or y < 0 or y >= image.get_height():
 		return
-	if blend and color.a < 1.0:
+	if blend:
+		if color.a <= 0.001:
+			return  # skip drawing transparent pixel when blending
 		var cur: Color = image.get_pixel(x, y)
 		if cur.a > 0.001:
 			image.set_pixel(x, y, cur.blend(color))
 			return
 	image.set_pixel(x, y, color)
+
+
+func _draw_flat_pixels_fast(image: Image, flat_data: Array, blend: bool) -> Dictionary:
+	var w := image.get_width()
+	var h := image.get_height()
+	var drawn := 0
+	var skipped := 0
+	var total_items := flat_data.size()
+	if total_items < 3:
+		return {"drawn": 0, "skipped": 0}
+
+	# Detect stride:
+	# Stride 3: [x, y, "#hex", x, y, "#hex", ...]
+	# Stride 6: [x, y, r, g, b, a, ...]
+	var stride := 3
+	var mode_hex := false
+
+	if typeof(flat_data[2]) == TYPE_STRING:
+		stride = 3
+		mode_hex = true
+	elif total_items >= 6 and (typeof(flat_data[2]) == TYPE_INT or typeof(flat_data[2]) == TYPE_FLOAT):
+		stride = 6
+		mode_hex = false
+	else:
+		stride = 3
+		mode_hex = true
+
+	var color_cache := {}
+	var i := 0
+
+	while i + stride <= total_items:
+		var x: int = int(flat_data[i])
+		var y: int = int(flat_data[i + 1])
+		if x < 0 or x >= w or y < 0 or y >= h:
+			skipped += 1
+			i += stride
+			continue
+
+		var color: Color
+		if mode_hex:
+			var hex_str: String = str(flat_data[i + 2])
+			if color_cache.has(hex_str):
+				color = color_cache[hex_str]
+			else:
+				color = Color.html(hex_str) if Color.html_is_valid(hex_str) else Color.BLACK
+				color_cache[hex_str] = color
+		else:
+			var r_val: float = float(flat_data[i + 2])
+			var g_val: float = float(flat_data[i + 3])
+			var b_val: float = float(flat_data[i + 4])
+			var a_val: float = float(flat_data[i + 5])
+			if r_val > 1.0 or g_val > 1.0 or b_val > 1.0 or a_val > 1.0:
+				color = Color(r_val * 0.0039215686, g_val * 0.0039215686, b_val * 0.0039215686, a_val * 0.0039215686)
+			else:
+				color = Color(r_val, g_val, b_val, a_val)
+
+		_put_pixel(image, x, y, color, blend)
+		drawn += 1
+		i += stride
+
+	return {"drawn": drawn, "skipped": skipped}
 
 
 func _cmd_draw_pixel(params: Dictionary) -> Dictionary:
@@ -994,12 +1177,45 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 	if target.error != "":
 		return {"success": false, "error": target.error}
 
-	var pixels: Array = params.get("pixels", [])
-	if pixels.is_empty():
-		return {"success": false, "error": "Missing or empty 'pixels' array"}
-
 	var blend: bool = bool(params.get("blend", false))
 	var image: Image = target.image
+
+	if params.has("flat_pixels") and (params["flat_pixels"] is Array) and not params["flat_pixels"].is_empty():
+		var res := _draw_flat_pixels_fast(image, params["flat_pixels"], blend)
+		_commit_image_change(image, "Draw Pixels (fast)", target.frame, target.layer)
+		return {
+			"success": true,
+			"data": {
+				"drawn": res.drawn,
+				"skipped": res.skipped,
+				"pixels_drawn": res.drawn,
+				"pixels_clipped": res.skipped,
+				"total": res.drawn + res.skipped,
+				"frame": target.frame,
+				"layer": target.layer
+			}
+		}
+
+	if params.has("data") and (params["data"] is Array) and not params["data"].is_empty():
+		var res := _draw_flat_pixels_fast(image, params["data"], blend)
+		_commit_image_change(image, "Draw Pixels (fast)", target.frame, target.layer)
+		return {
+			"success": true,
+			"data": {
+				"drawn": res.drawn,
+				"skipped": res.skipped,
+				"pixels_drawn": res.drawn,
+				"pixels_clipped": res.skipped,
+				"total": res.drawn + res.skipped,
+				"frame": target.frame,
+				"layer": target.layer
+			}
+		}
+
+	var pixels: Array = params.get("pixels", [])
+	if pixels.is_empty():
+		return {"success": false, "error": "Missing or empty 'pixels' or 'flat_pixels' array"}
+
 	var w := image.get_width()
 	var h := image.get_height()
 	var drawn := 0
@@ -1036,6 +1252,45 @@ func _cmd_draw_pixels(params: Dictionary) -> Dictionary:
 			"pixels_drawn": drawn,
 			"pixels_clipped": skipped,
 			"total": pixels.size(),
+			"frame": target.frame,
+			"layer": target.layer
+		}
+	}
+
+
+func _cmd_draw_pixels_fast(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var raw_data: Array = []
+	if params.has("data") and (params["data"] is Array):
+		raw_data = params["data"]
+	elif params.has("flat_pixels") and (params["flat_pixels"] is Array):
+		raw_data = params["flat_pixels"]
+
+	if raw_data.is_empty():
+		if params.has("pixels") and (params["pixels"] is Array):
+			return {"success": false, "error": "draw_pixels_fast requires a flat array [x,y,color,...] or [x,y,r,g,b,a,...], not an array of objects. Use 'draw_pixels' for object arrays."}
+		return {"success": false, "error": "Missing or empty flat pixel array (data / flat_pixels)"}
+
+	if not raw_data.is_empty() and (raw_data[0] is Dictionary):
+		return {"success": false, "error": "draw_pixels_fast requires a flat array [x,y,color,...] or [x,y,r,g,b,a,...], not an array of objects. Use 'draw_pixels' for object arrays."}
+
+	var blend: bool = bool(params.get("blend", false))
+	var image: Image = target.image
+
+	var res := _draw_flat_pixels_fast(image, raw_data, blend)
+	_commit_image_change(image, "Draw Pixels Fast", target.frame, target.layer)
+
+	return {
+		"success": true,
+		"data": {
+			"drawn": res.drawn,
+			"skipped": res.skipped,
+			"pixels_drawn": res.drawn,
+			"pixels_clipped": res.skipped,
+			"total": res.drawn + res.skipped,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -1222,9 +1477,16 @@ func _cmd_draw_polygon(params: Dictionary) -> Dictionary:
 	var max_x := -999999
 	var min_y := 999999
 	var max_y := -999999
-	for p in points_array:
-		var x = int(p.get("x", 0))
-		var y = int(p.get("y", 0))
+	for i in range(points_array.size()):
+		var p = points_array[i]
+		if not (p is Dictionary):
+			return {"success": false, "error": "Point at index %d is not an object" % i}
+		var px_raw = p.get("x", null)
+		var py_raw = p.get("y", null)
+		if px_raw == null or py_raw == null or is_nan(float(px_raw)) or is_nan(float(py_raw)):
+			return {"success": false, "error": "Point at index %d has invalid or NaN coordinates: x=%s, y=%s" % [i, str(px_raw), str(py_raw)]}
+		var x: int = int(roundf(float(px_raw)))
+		var y: int = int(roundf(float(py_raw)))
 		points.append(Vector2(x, y))
 		min_x = mini(min_x, x)
 		max_x = maxi(max_x, x)
@@ -1762,7 +2024,9 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 	if type < 0 or type > 2:
 		return {"success": false, "error": "Invalid layer type: %d (must be 0=Pixel, 1=Group, 2=3D)" % type}
 
-	var above_layer: int = int(params.get("above_layer", project.layers.size() - 1))
+	var above_layer: int = project.layers.size() - 1
+	if params.has("above_layer"):
+		above_layer = _resolve_layer_index({"layer": params["above_layer"]}, project)
 	if above_layer < 0 or above_layer >= project.layers.size():
 		return {"success": false, "error": "Invalid above_layer index: %d" % above_layer}
 
@@ -1788,13 +2052,17 @@ func _cmd_add_layer(params: Dictionary) -> Dictionary:
 		canvas.queue_redraw()
 
 	var actual_name := layer_name
+	var new_layer_id := ""
 	if new_layer_idx < project.layers.size():
-		actual_name = project.layers[new_layer_idx].name
+		var lyr = project.layers[new_layer_idx]
+		actual_name = lyr.name
+		new_layer_id = _get_or_create_layer_id(lyr)
 
 	return {
 		"success": true,
 		"data": {
 			"name": actual_name,
+			"layer_id": new_layer_id,
 			"type": type,
 			"above_layer": above_layer,
 			"layer_index": new_layer_idx,
@@ -1811,9 +2079,9 @@ func _cmd_delete_layer(params: Dictionary) -> Dictionary:
 	if project.layers.size() <= 1:
 		return {"success": false, "error": "Cannot delete the only layer in project"}
 
-	var layer_index: int = params.get("index", project.current_layer)
+	var layer_index: int = _resolve_layer_index(params, project)
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("index", params.get("layer_id", params.get("layer", layer_index))))}
 
 	project.remove_layers(PackedInt32Array([layer_index]))
 	project.current_layer = clampi(project.current_layer, 0, project.layers.size() - 1)
@@ -1850,11 +2118,11 @@ func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var layer_index: int = params.get("index", -1)
+	var layer_index: int = _resolve_layer_index(params, project)
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("index", params.get("layer_id", params.get("layer", layer_index))))}
 
-	var opacity: float = params.get("opacity", 1.0)
+	var opacity: float = float(params.get("opacity", 1.0))
 	opacity = clampf(opacity, 0.0, 1.0)
 	project.layers[layer_index].opacity = opacity
 
@@ -1869,7 +2137,14 @@ func _cmd_set_layer_opacity(params: Dictionary) -> Dictionary:
 	if timeline and timeline.has_method("_update_layer_settings_ui"):
 		timeline._update_layer_settings_ui()
 
-	return {"success": true, "data": {"index": layer_index, "opacity": opacity}}
+	return {
+		"success": true,
+		"data": {
+			"index": layer_index,
+			"layer_id": _get_or_create_layer_id(project.layers[layer_index]),
+			"opacity": opacity
+		}
+	}
 
 
 func _cmd_set_layer_blend_mode(params: Dictionary) -> Dictionary:
@@ -1877,11 +2152,11 @@ func _cmd_set_layer_blend_mode(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var layer_index: int = params.get("index", -1)
+	var layer_index: int = _resolve_layer_index(params, project)
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("index", params.get("layer_id", params.get("layer", layer_index))))}
 
-	var blend_mode: int = params.get("blend_mode", 0)
+	var blend_mode: int = int(params.get("blend_mode", 0))
 	project.layers[layer_index].blend_mode = blend_mode
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -1889,7 +2164,14 @@ func _cmd_set_layer_blend_mode(params: Dictionary) -> Dictionary:
 			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
-	return {"success": true, "data": {"index": layer_index, "blend_mode": blend_mode}}
+	return {
+		"success": true,
+		"data": {
+			"index": layer_index,
+			"layer_id": _get_or_create_layer_id(project.layers[layer_index]),
+			"blend_mode": blend_mode
+		}
+	}
 
 
 func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
@@ -1897,11 +2179,11 @@ func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var layer_index: int = params.get("index", -1)
+	var layer_index: int = _resolve_layer_index(params, project)
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("index", params.get("layer_id", params.get("layer", layer_index))))}
 
-	var visible: bool = params.get("visible", true)
+	var visible: bool = bool(params.get("visible", true))
 	project.layers[layer_index].visible = visible
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -1909,7 +2191,14 @@ func _cmd_set_layer_visibility(params: Dictionary) -> Dictionary:
 			canvas.project_changed = true
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
-	return {"success": true, "data": {"index": layer_index, "visible": visible}}
+	return {
+		"success": true,
+		"data": {
+			"index": layer_index,
+			"layer_id": _get_or_create_layer_id(project.layers[layer_index]),
+			"visible": visible
+		}
+	}
 
 
 func _cmd_set_layer_name(params: Dictionary) -> Dictionary:
@@ -1917,7 +2206,7 @@ func _cmd_set_layer_name(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var index: int = int(params.get("index", project.current_layer))
+	var index: int = _resolve_layer_index(params, project)
 	var name: String = str(params.get("name", "")).strip_edges()
 
 	if index < 0 or index >= project.layers.size():
@@ -1927,7 +2216,15 @@ func _cmd_set_layer_name(params: Dictionary) -> Dictionary:
 
 	var old_name: String = project.layers[index].name
 	project.layers[index].name = name
-	return {"success": true, "data": {"index": index, "old_name": old_name, "new_name": name}}
+	return {
+		"success": true,
+		"data": {
+			"index": index,
+			"layer_id": _get_or_create_layer_id(project.layers[index]),
+			"old_name": old_name,
+			"new_name": name
+		}
+	}
 
 
 func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
@@ -1935,8 +2232,12 @@ func _cmd_reorder_layers(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var from_index: int = int(params.get("from_index", -1))
-	var to_index: int = int(params.get("to_index", -1))
+	var from_index: int = -1
+	if params.has("from_index"):
+		from_index = _resolve_layer_index({"layer": params["from_index"]}, project)
+	var to_index: int = -1
+	if params.has("to_index"):
+		to_index = _resolve_layer_index({"layer": params["to_index"]}, project)
 
 	if from_index < 0 or from_index >= project.layers.size():
 		return {"success": false, "error": "Invalid from_index: %d" % from_index}
@@ -2024,6 +2325,7 @@ func _cmd_get_layers(_params: Dictionary) -> Dictionary:
 
 		layers.append({
 			"index": i,
+			"layer_id": _get_or_create_layer_id(layer),
 			"name": layer.name,
 			"visible": layer.visible,
 			"locked": layer.locked,
@@ -2257,16 +2559,24 @@ func _cmd_switch_cel(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var frame_index: int = params.get("frame", project.current_frame)
-	var layer_index: int = params.get("layer", project.current_layer)
+	var frame_index: int = int(params.get("frame", project.current_frame))
+	var layer_index: int = _resolve_layer_index(params, project)
 
 	if frame_index < 0 or frame_index >= project.frames.size():
 		return {"success": false, "error": "Invalid frame index: %d" % frame_index}
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("layer", layer_index))}
 
 	project.change_cel(frame_index, layer_index)
-	return {"success": true, "data": {"frame": project.current_frame, "layer": project.current_layer}}
+	return {
+		"success": true,
+		"data": {
+			"frame": project.current_frame,
+			"layer": project.current_layer,
+			"layer_id": _get_or_create_layer_id(project.layers[project.current_layer]),
+			"layer_name": project.layers[project.current_layer].name
+		}
+	}
 
 
 func _cmd_copy_cel(params: Dictionary) -> Dictionary:
@@ -2274,10 +2584,17 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var src_frame: int = params.get("src_frame", project.current_frame)
-	var src_layer: int = params.get("src_layer", project.current_layer)
-	var dst_frame: int = params.get("dst_frame", -1)
-	var dst_layer: int = params.get("dst_layer", -1)
+	var src_frame: int = int(params.get("src_frame", project.current_frame))
+	var src_layer: int = -1
+	if params.has("src_layer"):
+		src_layer = _resolve_layer_index({"layer": params["src_layer"]}, project)
+	else:
+		src_layer = project.current_layer
+
+	var dst_frame: int = int(params.get("dst_frame", -1))
+	var dst_layer: int = -1
+	if params.has("dst_layer"):
+		dst_layer = _resolve_layer_index({"layer": params["dst_layer"]}, project)
 
 	if dst_frame < 0 or dst_layer < 0:
 		return {"success": false, "error": "dst_frame and dst_layer are required"}
@@ -2319,8 +2636,10 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 	var result_data: Dictionary = {
 		"src_frame": src_frame,
 		"src_layer": src_layer,
+		"src_layer_id": _get_or_create_layer_id(project.layers[src_layer]),
 		"dst_frame": dst_frame,
 		"dst_layer": dst_layer,
+		"dst_layer_id": _get_or_create_layer_id(project.layers[dst_layer]),
 		"pixels_copied": pixels_copied
 	}
 	if pixels_copied == 0:
@@ -2334,13 +2653,13 @@ func _cmd_clear_cel(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var frame_index: int = params.get("frame", project.current_frame)
-	var layer_index: int = params.get("layer", project.current_layer)
+	var frame_index: int = int(params.get("frame", project.current_frame))
+	var layer_index: int = _resolve_layer_index(params, project)
 
 	if frame_index < 0 or frame_index >= project.frames.size():
 		return {"success": false, "error": "Invalid frame index: %d" % frame_index}
 	if layer_index < 0 or layer_index >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % layer_index}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("layer", layer_index))}
 
 	var cel = project.frames[frame_index].cels[layer_index]
 	if cel == null or cel.get_class_name() != "PixelCel":
@@ -2348,7 +2667,17 @@ func _cmd_clear_cel(params: Dictionary) -> Dictionary:
 
 	var cleared_img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
 	_commit_image_change(cleared_img, "Clear Cel", frame_index, layer_index)
-	return {"success": true, "data": {"frame": frame_index, "layer": layer_index}}
+	return {
+		"success": true,
+		"data": {
+			"frame": frame_index,
+			"layer": layer_index,
+			"layer_id": _get_or_create_layer_id(project.layers[layer_index]),
+			"layer_name": project.layers[layer_index].name,
+			"can_undo": true,
+			"message": "Cel cleared successfully (action recorded in undo history)"
+		}
+	}
 
 
 func _cmd_export_animation(params: Dictionary) -> Dictionary:
@@ -3528,9 +3857,9 @@ func _cmd_duplicate_layer(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var src_idx: int = int(params.get("index", project.current_layer))
+	var src_idx: int = _resolve_layer_index(params, project)
 	if src_idx < 0 or src_idx >= project.layers.size():
-		return {"success": false, "error": "Invalid layer index: %d" % src_idx}
+		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("index", params.get("layer", src_idx)))}
 
 	var src_layer = project.layers[src_idx]
 	var new_name = src_layer.name + " Copy"
@@ -3550,7 +3879,18 @@ func _cmd_duplicate_layer(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"source_index": src_idx, "new_index": new_layer_idx, "name": new_name, "total_layers": project.layers.size()}}
+	var new_layer = project.layers[new_layer_idx]
+	return {
+		"success": true,
+		"data": {
+			"source_index": src_idx,
+			"source_layer_id": _get_or_create_layer_id(src_layer),
+			"new_index": new_layer_idx,
+			"new_layer_id": _get_or_create_layer_id(new_layer),
+			"name": new_name,
+			"total_layers": project.layers.size()
+		}
+	}
 
 
 func _cmd_merge_layers(params: Dictionary) -> Dictionary:
@@ -3560,11 +3900,20 @@ func _cmd_merge_layers(params: Dictionary) -> Dictionary:
 	if project.layers.size() <= 1:
 		return {"success": false, "error": "Cannot merge when only 1 layer exists"}
 
-	var src_idx: int = int(params.get("source_index", project.current_layer))
-	var dst_idx: int = int(params.get("target_index", maxi(0, src_idx - 1)))
+	var src_idx: int = -1
+	if params.has("source_index"):
+		src_idx = _resolve_layer_index({"layer": params["source_index"]}, project)
+	else:
+		src_idx = _resolve_layer_index(params, project)
+
+	var dst_idx: int = -1
+	if params.has("target_index"):
+		dst_idx = _resolve_layer_index({"layer": params["target_index"]}, project)
+	else:
+		dst_idx = maxi(0, src_idx - 1)
 
 	if src_idx < 0 or src_idx >= project.layers.size() or dst_idx < 0 or dst_idx >= project.layers.size():
-		return {"success": false, "error": "Invalid layer indices"}
+		return {"success": false, "error": "Invalid layer indices: source=%d, target=%d" % [src_idx, dst_idx]}
 	if src_idx == dst_idx:
 		return {"success": false, "error": "source_index and target_index cannot be identical"}
 
@@ -3579,6 +3928,9 @@ func _cmd_merge_layers(params: Dictionary) -> Dictionary:
 			blended.blend_rect(src_img, Rect2i(Vector2i.ZERO, src_img.get_size()), Vector2i.ZERO)
 			_api.project.set_pixelcel_image(blended, f, dst_idx)
 
+	var target_layer = project.layers[dst_idx]
+	var target_layer_id := _get_or_create_layer_id(target_layer)
+
 	project.remove_layers(PackedInt32Array([src_idx]))
 	project.current_layer = clampi(dst_idx, 0, project.layers.size() - 1)
 	_api.project.current_layer = project.current_layer
@@ -3589,7 +3941,14 @@ func _cmd_merge_layers(params: Dictionary) -> Dictionary:
 		canvas.set("update_all_layers", true)
 		canvas.queue_redraw()
 
-	return {"success": true, "data": {"merged_into": dst_idx, "remaining_layers": project.layers.size()}}
+	return {
+		"success": true,
+		"data": {
+			"merged_into": dst_idx,
+			"target_layer_id": target_layer_id,
+			"remaining_layers": project.layers.size()
+		}
+	}
 
 
 func _cmd_create_layer_group(params: Dictionary) -> Dictionary:
@@ -3833,6 +4192,7 @@ func _cmd_apply_glow(params: Dictionary) -> Dictionary:
 			"intensity": intensity,
 			"as_new_layer": as_new_layer,
 			"glow_layer_index": glow_layer_idx,
+			"glow_layer_id": _get_or_create_layer_id(project.layers[glow_layer_idx]) if (as_new_layer and glow_layer_idx >= 0 and glow_layer_idx < project.layers.size()) else "",
 			"emitters_found": emitter_count,
 			"candidate_pixels": emitter_count,
 			"falloff": falloff_mode,
@@ -3848,26 +4208,58 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": target.error}
 
 	var project = _api.project.current_project
-	var x1: int = int(params.get("x1", 0))
-	var y1: int = int(params.get("y1", 0))
-	var x2: int = int(params.get("x2", int(project.size.x)))
-	var y2: int = int(params.get("y2", int(project.size.y)))
-	var col1_hex: String = params.get("color1", "#ffffff")
-	var col2_hex: String = params.get("color2", "#000000")
-	var dither: bool = bool(params.get("dither", true))
-	var grad_type: String = params.get("type", "linear")
+	var x1: int = int(roundf(float(params.get("x1", 0))))
+	var y1: int = int(roundf(float(params.get("y1", 0))))
+	var x2: int = int(roundf(float(params.get("x2", int(project.size.x)))))
+	var y2: int = int(roundf(float(params.get("y2", int(project.size.y)))))
+	var col1_hex: String = str(params.get("color1", "#ffffff"))
+	var col2_hex: String = str(params.get("color2", "#000000"))
+	var blend: bool = bool(params.get("blend", true))
+	var grad_type: String = str(params.get("type", "linear"))
+	var shape: String = str(params.get("shape", ""))
+	var direction: String = str(params.get("direction", "auto")).to_lower()
+	var falloff: String = str(params.get("falloff", "linear"))
+	var feather_val: float = clampf(float(params.get("feather", 0.0)), 0.0, 1.0)
+	if falloff == "feather" and feather_val <= 0.0:
+		feather_val = 0.5
 
-	var col1 := Color.html(col1_hex) if Color.html_is_valid(col1_hex) else Color.WHITE
-	var col2 := Color.html(col2_hex) if Color.html_is_valid(col2_hex) else Color.BLACK
-
-	var img: Image = target.image
+	var is_elliptical: bool = (grad_type in ["elliptical", "ellipse"] or shape in ["elliptical", "ellipse"])
+	var is_radial: bool = (grad_type in ["radial", "circle"] or shape in ["radial", "circle"]) or is_elliptical
 
 	var rx1 := mini(x1, x2)
 	var ry1 := mini(y1, y2)
 	var rx2 := maxi(x1, x2)
 	var ry2 := maxi(y1, y2)
+	if rx1 == rx2:
+		rx2 = rx1 + 1
+	if ry1 == ry2:
+		ry2 = ry1 + 1
 	var rw := maxf(1.0, float(rx2 - rx1))
 	var rh := maxf(1.0, float(ry2 - ry1))
+
+	var is_horizontal: bool = false
+	if direction == "horizontal" or grad_type in ["horizontal", "linear_h", "linear_x"]:
+		is_horizontal = true
+	elif direction == "vertical" or grad_type in ["vertical", "linear_v", "linear_y"]:
+		is_horizontal = false
+	elif direction == "auto" or direction == "":
+		is_horizontal = (rw > rh)
+
+	var alpha_mod: float = clampf(float(params.get("alpha", 1.0)), 0.0, 1.0)
+	var col1 := Color.html(col1_hex) if Color.html_is_valid(col1_hex) else Color.WHITE
+	var col2 := Color.html(col2_hex) if Color.html_is_valid(col2_hex) else Color.BLACK
+	col1.a *= alpha_mod
+	col2.a *= alpha_mod
+
+	var dither_param = params.get("dither", null)
+	var dither: bool
+	if dither_param != null:
+		dither = bool(dither_param)
+	else:
+		var has_transparent_endpoint: bool = (col1.a <= 0.01 or col2.a <= 0.01)
+		dither = not has_transparent_endpoint
+
+	var img: Image = target.image
 
 	var bayer4 := [
 		[  0.5/16.0,  8.5/16.0,  2.5/16.0, 10.5/16.0 ],
@@ -3888,13 +4280,52 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 						continue
 
 				var t := 0.0
-				if grad_type == "radial":
+				if is_radial:
 					var cx := float(rx1 + rx2) * 0.5
 					var cy := float(ry1 + ry2) * 0.5
-					var max_r := maxf(rw, rh) * 0.5
-					t = clampf(Vector2(x - cx, y - cy).length() / max_r, 0.0, 1.0)
+					if is_elliptical:
+						var rad_x := maxf(0.5, rw * 0.5)
+						var rad_y := maxf(0.5, rh * 0.5)
+						var norm_x := (float(x) - cx) / rad_x
+						var norm_y := (float(y) - cy) / rad_y
+						t = clampf(sqrt(norm_x * norm_x + norm_y * norm_y), 0.0, 1.0)
+					else:
+						var max_r := maxf(rw, rh) * 0.5
+						t = clampf(Vector2(x - cx, y - cy).length() / max_r, 0.0, 1.0)
 				else:
-					t = clampf(float(y - ry1) / rh, 0.0, 1.0)
+					if is_horizontal:
+						t = clampf(float(x - rx1) / rw, 0.0, 1.0)
+					else:
+						t = clampf(float(y - ry1) / rh, 0.0, 1.0)
+
+				# Falloff curves
+				match falloff:
+					"smooth", "smoothstep":
+						t = t * t * (3.0 - 2.0 * t)
+					"inverse_square":
+						t = 1.0 - (1.0 - t) * (1.0 - t)
+					"exponential", "exp":
+						t = clampf((1.0 - exp(-3.0 * t)) / (1.0 - exp(-3.0)), 0.0, 1.0)
+					"feather":
+						var f_mode := clampf(feather_val if feather_val > 0.0 else 0.25, 0.01, 0.5)
+						if t < f_mode:
+							var u := t / f_mode
+							t = f_mode * (u * u * (3.0 - 2.0 * u))
+						elif t > (1.0 - f_mode):
+							var u := (t - (1.0 - f_mode)) / f_mode
+							t = (1.0 - f_mode) + f_mode * (u * u * (3.0 - 2.0 * u))
+					_:
+						pass
+
+				# Edge softening if feather is provided and falloff wasn't already feather
+				if feather_val > 0.0 and falloff != "feather":
+					var f := clampf(feather_val * 0.5, 0.001, 0.5)
+					if t < f:
+						var u := t / f
+						t = f * (u * u * (3.0 - 2.0 * u))
+					elif t > (1.0 - f):
+						var u := (t - (1.0 - f)) / f
+						t = (1.0 - f) + f * (u * u * (3.0 - 2.0 * u))
 
 				var final_col: Color
 				if dither:
@@ -3903,7 +4334,16 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 				else:
 					final_col = col1.lerp(col2, t)
 
-				img.set_pixel(x, y, final_col)
+				if blend:
+					if final_col.a <= 0.001:
+						continue
+					var cur: Color = img.get_pixel(x, y)
+					if cur.a <= 0.001:
+						img.set_pixel(x, y, final_col)
+					else:
+						img.set_pixel(x, y, cur.blend(final_col))
+				else:
+					img.set_pixel(x, y, final_col)
 
 	_commit_image_change(img, "Apply Gradient", target.frame, target.layer)
 
@@ -3911,7 +4351,13 @@ func _cmd_apply_gradient(params: Dictionary) -> Dictionary:
 		"success": true,
 		"data": {
 			"type": grad_type,
+			"shape": shape,
+			"direction": "horizontal" if is_horizontal else "vertical",
+			"inferred_direction": "horizontal" if (rw > rh) else "vertical",
+			"falloff": falloff,
+			"blend": blend,
 			"dither": dither,
+			"alpha": alpha_mod,
 			"bounds": [rx1, ry1, rx2, ry2],
 			"frame": target.frame,
 			"layer": target.layer,
@@ -4096,6 +4542,12 @@ func _cmd_get_palette_usage(params: Dictionary) -> Dictionary:
 		})
 
 	usage_list.sort_custom(func(a, b): return a.count > b.count)
+
+	var top: int = int(params.get("top", 32))
+	var truncated_colors: Array = usage_list
+	if top > 0 and usage_list.size() > top:
+		truncated_colors = usage_list.slice(0, top)
+
 	return {
 		"success": true,
 		"data": {
@@ -4103,7 +4555,8 @@ func _cmd_get_palette_usage(params: Dictionary) -> Dictionary:
 			"frame": frame_idx,
 			"unique_colors_count": usage_list.size(),
 			"total_colored_pixels": total_pixels,
-			"colors": usage_list
+			"top": top,
+			"colors": truncated_colors
 		}
 	}
 
@@ -4628,5 +5081,124 @@ func _cmd_get_history(params: Dictionary) -> Dictionary:
 			"active_cursor": cursor_info
 		}
 	}
+
+
+func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
+	var code: String = params.get("code", "")
+	if code.strip_edges() == "":
+		return {"success": false, "error": "Missing or empty code to evaluate"}
+
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
+
+	var image: Image = target.image
+	var frame_idx: int = target.frame
+	var layer_idx: int = target.layer
+	var project = _api.project.current_project
+
+	var script_params: Dictionary = {}
+	if params.has("params") and (params["params"] is Dictionary):
+		script_params = params["params"]
+
+	var full_source := ""
+	if code.find("func execute") != -1 or code.find("func run") != -1:
+		if not code.begins_with("extends"):
+			full_source = "extends RefCounted\n\n" + code
+		else:
+			full_source = code
+	else:
+		full_source = "extends RefCounted\n\nfunc run(api: Node, image: Image, project, params: Dictionary) -> Variant:\n"
+		var lines := code.split("\n")
+		for line in lines:
+			var trimmed_line := line
+			var leading_tabs := ""
+			while trimmed_line.begins_with("    "):
+				leading_tabs += "\t"
+				trimmed_line = trimmed_line.substr(4)
+			while trimmed_line.begins_with("\t"):
+				leading_tabs += "\t"
+				trimmed_line = trimmed_line.substr(1)
+			full_source += "\t" + leading_tabs + trimmed_line + "\n"
+		full_source += "\treturn null\n"
+
+	var script := GDScript.new()
+	script.source_code = full_source
+	var err = script.reload()
+	if err != OK:
+		return {
+			"success": false,
+			"error": "Failed to compile GDScript (Error code %d)" % err,
+			"source": full_source
+		}
+
+	var instance = script.new()
+	if instance == null:
+		return {"success": false, "error": "Failed to instantiate GDScript"}
+
+	var method_name := ""
+	var method_info: Dictionary = {}
+	if instance.has_method("run"):
+		method_name = "run"
+	elif instance.has_method("execute"):
+		method_name = "execute"
+	else:
+		return {"success": false, "error": "Script must define 'run(api, image, project, params)' or 'execute(api, image, project, params)'"}
+
+	for m in instance.get_method_list():
+		if m["name"] == method_name:
+			method_info = m
+			break
+
+	var call_args: Array = []
+	var m_args: Array = method_info.get("args", [])
+	for arg in m_args:
+		var aname: String = str(arg.get("name", "")).to_lower()
+		var cname: String = str(arg.get("class_name", ""))
+		if aname in ["image", "img", "cel"] or cname == "Image":
+			call_args.append(image)
+		elif aname in ["params", "dict", "parameters"]:
+			call_args.append(script_params)
+		elif aname in ["project", "proj"]:
+			call_args.append(project)
+		elif aname in ["api", "extensions_api", "node"]:
+			call_args.append(_api)
+		else:
+			var pos := call_args.size()
+			if pos == 0:
+				call_args.append(_api)
+			elif pos == 1:
+				call_args.append(image)
+			elif pos == 2:
+				call_args.append(project)
+			elif pos == 3:
+				call_args.append(script_params)
+			else:
+				call_args.append(null)
+
+	var result = instance.callv(method_name, call_args)
+
+	if result is Image:
+		image = result
+
+	if image != null:
+		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx)
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		if "project_changed" in canvas:
+			canvas.project_changed = true
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
+
+	return {
+		"success": true,
+		"data": {
+			"result": result if not (result is Image) else "Image updated",
+			"frame": frame_idx,
+			"layer": layer_idx
+		}
+	}
+
 
 

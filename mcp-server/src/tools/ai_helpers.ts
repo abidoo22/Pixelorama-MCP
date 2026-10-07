@@ -394,10 +394,10 @@ export function registerAiHelperTools(server: McpServer): void {
       description: z.string().describe(
         "What to draw — e.g. 'a red mushroom with white spots, Mario style', 'a blue gem', 'a walking human character (4 frames)'"
       ),
-      width: coerceInt(8, 128).default(16)
-        .describe("Canvas width in pixels"),
-      height: coerceInt(8, 128).default(16)
-        .describe("Canvas height in pixels"),
+      width: coerceInt(8, 4096).default(16)
+        .describe("Canvas width in pixels (up to 4096)"),
+      height: coerceInt(8, 4096).default(16)
+        .describe("Canvas height in pixels (up to 4096)"),
       style: z.string().default("pico8")
         .describe("Palette/style — e.g. 'nes', 'gameboy', 'pico8', 'forest', 'retro'"),
       animated: coerceBool().default(false)
@@ -443,6 +443,65 @@ export function registerAiHelperTools(server: McpServer): void {
       plan += `5. get_canvas_snapshot() → verify result\n`;
       plan += `6. export_image(path="/path/to/output.png")\n`;
       plan += `\`\`\``;
+
+      return { content: [{ type: "text" as const, text: plan }] };
+    }
+  );
+
+  // ── generate_scene_plan ──────────────────────────────────────────────────
+  server.tool(
+    "generate_scene_plan",
+    "Generate an architectural scene composition plan for full-scale pixel art landscapes and environments. Returns rule-of-thirds framing, horizon height, depth planes, recommended layer stack with blend modes, and procedural generation playbook.",
+    {
+      description: z.string().describe(
+        "Scene description — e.g. 'Aurora night scene over alpine lake with lit log cabin', 'Cyberpunk metropolis skyline with rain reflections', 'Sunken ancient temple in deep ocean'"
+      ),
+      width: coerceInt(16, 4096).default(320).describe("Canvas width in pixels"),
+      height: coerceInt(16, 4096).default(240).describe("Canvas height in pixels"),
+      style: z.string().default("night").describe("Atmospheric style / lighting mood — e.g. 'night', 'cyberpunk', 'sunset', 'forest', 'desert'"),
+      horizon_ratio: coerceFloat(0.1, 0.9).default(0.6).describe("Horizon height ratio (0.33 = high sky, 0.5 = center, 0.6 = lower third golden ratio)"),
+    },
+    async ({ description, width, height, style, horizon_ratio }) => {
+      const horizonY = Math.round(height * horizon_ratio);
+      const skyHeight = horizonY;
+      const groundHeight = height - horizonY;
+      const paletteKey = matchPalette(style);
+
+      let plan = `# 🏞️ Scene Composition Plan: "${description}"\n\n`;
+      plan += `## 📐 Framing & Canvas Dimensions\n`;
+      plan += `- **Resolution**: ${width}×${height} pixels\n`;
+      plan += `- **Horizon Line**: Y = ${horizonY} (Sky: ${skyHeight} px, Ground/Water: ${groundHeight} px)\n`;
+      plan += `- **Rule of Thirds Focal Points**:\n`;
+      plan += `  - Primary focal region: (${Math.round(width * 0.67)}, ${Math.round(height * 0.67)})\n`;
+      plan += `  - Secondary interest: (${Math.round(width * 0.33)}, ${Math.round(height * 0.33)})\n\n`;
+
+      plan += `## 🎨 Atmosphere & Value Hierarchy\n`;
+      plan += `- **Atmospheric Perspective**: Distant layers must have lower contrast and shift toward ambient sky tint.\n`;
+      plan += `- **Lighting Contrast**: Keep large fields in deep or muted tones so key specular lights read sharply.\n\n`;
+
+      plan += `## 🥞 Recommended Layer Stack (Bottom → Top)\n`;
+      plan += `*Tip: You can now target layers by their names directly (e.g. \`layer: "Sky"\`) without worrying about index shifts!*\n\n`;
+      plan += `1. **Layer: \`Sky\`** (Opacity: 100%, Normal)\n`;
+      plan += `   - Base sky gradient from Y=0 to Y=${horizonY} using \`apply_gradient\` (dither: true)\n`;
+      plan += `2. **Layer: \`Celestials\`** (Opacity: 100%, Normal or Add)\n`;
+      plan += `   - Stars, moon, nebulae, aurora striations (\`draw_line\` / \`draw_pixels_fast\`)\n`;
+      plan += `3. **Layer: \`Backdrop_Far\`** (Opacity: 100%, Normal)\n`;
+      plan += `   - Distant mountain ridges, far city silhouettes (filled polygon or \`eval_gdscript\` noise)\n`;
+      plan += `4. **Layer: \`Midground_Terrain\`** (Opacity: 100%, Normal)\n`;
+      plan += `   - Hills, tree lines, lake/water body filling Y=${horizonY}..${height}\n`;
+      plan += `5. **Layer: \`Reflections\`** (Opacity: 60-80%, Screen or Normal)\n`;
+      plan += `   - Horizontal wavelets and inverse-square falloff reflections over water\n`;
+      plan += `6. **Layer: \`Foreground_Hero\`** (Opacity: 100%, Normal)\n`;
+      plan += `   - Main cabin, hero character, foreground cliffs/branches\n`;
+      plan += `7. **Layer: \`Lighting_Glow\`** (BlendMode: Add / Screen)\n`;
+      plan += `   - Window illumination, lantern bloom via \`apply_gradient\` (shape: "radial", falloff: "inverse_square", blend: true)\n`;
+      plan += `8. **Layer: \`Vignette\`** (Opacity: 25-40%, Multiply or Normal)\n`;
+      plan += `   - Subtle edge shading to pull focus into center composition\n\n`;
+
+      plan += `## ⚡ Procedural Acceleration Tips\n`;
+      plan += `- Use \`eval_gdscript\` for noise textures, water ripples, and mountain fractals (runs in milliseconds inside Pixelorama).\n`;
+      plan += `- Use \`draw_pixels_fast\` with flat arrays \`[x, y, color, ...]\` for thousands of star/detail dots.\n`;
+      plan += `- Use \`capture_canvas_image\` with \`max_size: 512\` to inspect composition during generation.\n`;
 
       return { content: [{ type: "text" as const, text: plan }] };
     }

@@ -6,7 +6,7 @@
  */
 
 const BRIDGE_URL = process.env.PIX_MCP_BRIDGE_URL || "http://127.0.0.1:7373";
-const REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = parseInt(process.env.PIX_MCP_TIMEOUT_MS || "30000", 10) || 30_000;
 
 export interface BridgeResponse {
   success: boolean;
@@ -23,12 +23,13 @@ let commandQueue: Promise<unknown> = Promise.resolve();
  */
 export async function sendCommand(
   tool: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
 ): Promise<BridgeResponse> {
   return new Promise<BridgeResponse>((resolve) => {
     commandQueue = commandQueue
       .then(async () => {
-        const res = await _executeHttpCommand(tool, params);
+        const res = await _executeHttpCommand(tool, params, timeoutMs);
         resolve(res);
       })
       .catch((err) => {
@@ -42,13 +43,15 @@ export async function sendCommand(
 
 async function _executeHttpCommand(
   tool: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<BridgeResponse> {
   const body = JSON.stringify({ tool, params });
+  const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeout);
 
     const response = await fetch(`${BRIDGE_URL}/command`, {
       method: "POST",
@@ -65,7 +68,7 @@ async function _executeHttpCommand(
     if (error instanceof Error && error.name === "AbortError") {
       return {
         success: false,
-        error: `Request timed out after ${REQUEST_TIMEOUT_MS}ms. Is Pixelorama running with the pix-MCP bridge plugin enabled?`,
+        error: `Request timed out after ${effectiveTimeout}ms while executing '${tool}'. The operation may still be processing or completed inside Pixelorama. You can increase timeout via PIX_MCP_TIMEOUT_MS environment variable (e.g. 60000).`,
       };
     }
 
@@ -76,7 +79,7 @@ async function _executeHttpCommand(
     if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
       return {
         success: false,
-        error: `Cannot connect to Pixelorama bridge at ${BRIDGE_URL}. Make sure Pixelorama is running with the pix-MCP bridge plugin enabled.`,
+        error: `Cannot connect to Pixelorama bridge at ${BRIDGE_URL}. Make sure Pixelorama is running with the PixMcpBridge.pck plugin enabled.`,
       };
     }
 

@@ -247,19 +247,36 @@ Nudge or rotate pixels on a cel without erasing and redrawing.
 
 ---
 
-### `draw_pixels` ⭐ Primary drawing tool
-Draws multiple pixels in a single batch. **Always use this — never loop `draw_pixel`.**
+### `draw_pixels_fast` ⚡ High-Throughput Flat Pixel Drawer
+Draws pixels via a flat numeric/hex array with engine-speed rasterization (~0.02 ms/pixel, over 100× faster than object arrays). Recommended for scenes, backgrounds, large detail passes, and complex procedural artwork.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `pixels` | array | ✅ | Array of `{ x, y, color }` objects |
-| `layer` | number | — | Optional target layer index |
-| `frame` | number | — | Optional target frame index |
+| `data` | array | ✅ | Flat array: either `[x, y, color_hex, ...]` (stride 3) or `[x, y, r, g, b, a, ...]` (stride 6, values 0..255 or 0..1) |
+| `layer` | number \| string | — | Target layer index, layer name, or stable `layer_id` |
+| `frame` | number | — | Target frame index (default: active frame) |
+| `blend` | boolean | — | `true` = alpha blend over existing pixels, `false` = overwrite (default: `false`) |
 
-Each pixel object:
-- `x` — X coordinate (0-indexed)
-- `y` — Y coordinate (0-indexed)
-- `color` — hex color string (`"#ffd700"`)
+```json
+// Example: Stride 3 (hex string)
+{ "data": [10, 20, "#ff0000", 11, 20, "#00ff00"] }
+
+// Example: Stride 6 (RGBA values)
+{ "data": [10, 20, 255, 0, 0, 255, 11, 20, 0, 255, 0, 255] }
+```
+
+---
+
+### `draw_pixels` ⭐ Batch Drawing Tool
+Draws multiple pixels in a single batch commit with atomic undo history.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `pixels` | array | — | Array of `{ x, y, color }` objects |
+| `flat_pixels` | array | — | Flat alternative array `[x, y, color, ...]` for faster transmission |
+| `layer` | number \| string | — | Optional target layer index, layer name, or `layer_id` |
+| `frame` | number | — | Optional target frame index |
+| `blend` | boolean | — | `true` = alpha blend into existing pixels (default: `false`) |
 
 ```json
 { "success": true, "data": { "drawn": 1500, "skipped": 0, "pixels_drawn": 1500, "pixels_clipped": 0 } }
@@ -275,8 +292,10 @@ Draws a single pixel.
 | `x` | number | ✅ | X coordinate |
 | `y` | number | ✅ | Y coordinate |
 | `color` | string | — | Hex color (default: `"#000000"`) |
-| `layer` | number | — | Optional target layer index |
-| `frame` | number | — | Optional target frame index |
+| `alpha` | number | — | Optional explicit opacity (0..255 or 0.0..1.0) |
+| `blend` | boolean | — | Alpha blend into cel (default: `false`) |
+| `layer` | number \| string | — | Target layer index, name, or `layer_id` |
+| `frame` | number | — | Target frame index |
 
 ---
 
@@ -368,23 +387,27 @@ Flood-fills from a seed coordinate (paint bucket).
 
 Pixelorama supports multi-layer projects. Use layers to separate background, body, outline, and effects.
 
+> 💡 **Stable Layer Handles (`layer_id`)**: All layer tools return and accept persistent `layer_id` strings (e.g. `"layer_12345"`). When inserting or deleting layers, positional array indices shift, but `layer_id` remains stable across your entire workflow. All drawing, cel, and layer tools accept integer index (`0`), layer name (`"Outline"`), or `layer_id` polymorphically.
+
 ### `add_layer`
-Adds a new layer to the current project.
+Adds a new layer to the current project and returns its stable `layer_id`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | `""` | Layer name (empty for auto-naming) |
 | `type` | number | `0` | `0` = Pixel, `1` = Group, `2` = 3D |
-| `above_layer` | number | — | Insert above this layer index (defaults to current layer) |
-
----
-
-### `set_layer_name` / `reorder_layers`
-- **`set_layer_name`**: `{ index: number, name: string }` — Renames a layer.
-- **`reorder_layers`**: `{ from_index: number, to_index: number }` — Moves a layer in the stack order.
+| `above_layer` | number \| string | — | Insert above this layer index, name, or `layer_id` |
 
 ```json
-{ "success": true, "data": { "name": "Outline", "type": 0, "above_layer": 0 } }
+{
+  "success": true,
+  "data": {
+    "name": "Outline",
+    "layer_id": "layer_-9223371551741561607_13090",
+    "layer_index": 1,
+    "total_layers": 2
+  }
+}
 ```
 
 ---
@@ -650,16 +673,47 @@ Generates a structured, step-by-step drawing plan for an AI agent to execute usi
 | `animated` | boolean | `false` | Include multi-frame animation guidance |
 | `frames` | number | `4` | Number of animation frames |
 
+### `generate_scene_plan` ⭐ Scene & Landscape Planner
+Generates a structured composition blueprint for large pixel art scenes, environments, and complex multi-layer illustrations. Computes rule-of-thirds focal points, horizon placement, value key silhouette hierarchies, color ramps, and layer stacks.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `prompt` | string | ✅ | Scene description (e.g. `"Moonlit mountain lake with a glowing cabin"`) |
+| `width` | number | — | Canvas width (default: 320) |
+| `height` | number | — | Canvas height (default: 180) |
+
+```json
+{
+  "success": true,
+  "data": {
+    "composition": { "horizon_y": 110, "focal_point": { "x": 213, "y": 110 } },
+    "value_hierarchy": ["Sky / Far Distance", "Mountains / Midground", "Lake / Foreground"],
+    "suggested_layers": [
+      { "name": "Sky", "type": "Pixel", "role": "Dithered gradient & stars" },
+      { "name": "Mountains", "type": "Pixel", "role": "Silhouette ridge" },
+      { "name": "Lake", "type": "Pixel", "role": "Water reflection" },
+      { "name": "Cabin", "type": "Pixel", "role": "Focal subject with warm glow" }
+    ]
+  }
+}
+```
+
 ---
 
 ## 8. Vision & Inspection
 
 ### `capture_canvas_image`
-Captures a visual screenshot of the current canvas (all layers blended) and returns it as a real MCP image artifact (`type: "image"`). Enables multimodal AI models (Claude 3.7, GPT-4o) to visually inspect their drawing, verify proportions, check lighting, and self-correct.
+Captures a visual screenshot of the current canvas (all layers blended) and returns it as a real MCP image artifact (`type: "image"`). Enables multimodal AI models (Claude 3.7, GPT-4o) to visually inspect their drawing, verify proportions, check lighting, and self-correct. Supports region cropping and downscaling to minimize token consumption.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `frame` | number | current | Frame index to capture |
+| `x` | number | `0` | Sub-region crop X offset |
+| `y` | number | `0` | Sub-region crop Y offset |
+| `width` | number | — | Sub-region crop width in pixels |
+| `height` | number | — | Sub-region crop height in pixels |
+| `max_size` | number | — | Downscale longest dimension to this maximum size |
+| `scale` | number | — | Downscale multiplier (e.g. `0.5` for 50% preview) |
 
 ---
 
@@ -949,7 +1003,50 @@ Generate a soft neon/magic bloom halo around non-transparent pixels.
 ---
 
 ### `apply_gradient`
-Fill an area with linear/radial color gradients and optional Bayer dithering.
+Fills a bounding box with linear or radial gradients, Bayer dithering, alpha preservation, and customizable falloff curves.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `x1`, `y1` | number | ✅ | Start corner coordinates |
+| `x2`, `y2` | number | ✅ | End corner coordinates |
+| `color1` | string | ✅ | Start color hex (e.g. `"#ffe9c4"`) |
+| `color2` | string | ✅ | End color hex (e.g. `"#ffe9c400"`) |
+| `type` | string | — | `"linear"`, `"radial"`, or `"elliptical"` (default: `"linear"`) |
+| `shape` | string | — | Alias for `type`: `"circle"`, `"ellipse"`, `"radial"`, or `"elliptical"` |
+| `direction` | string | — | Linear gradient direction: `"auto"` (default: automatically infers `"horizontal"` if width > height, otherwise `"vertical"`), `"horizontal"` (left to right), or `"vertical"` (top to bottom) |
+| `falloff` | string | — | `"linear"` (default), `"smoothstep"` (cubic S-curve), `"inverse_square"` (bloom/light decay), `"exponential"`, or `"feather"` |
+| `feather` | number | — | Feather edge softening fraction (0.0 to 1.0, default: 0.0) |
+| `alpha` | number | — | Overall opacity multiplier (0.0 to 1.0, default: 1.0) |
+| `blend` | boolean | — | `true` (default): Alpha-blends into cel without wiping underlying pixels. Alpha-0 texels are safely skipped. |
+| `dither` | boolean | — | Enable 4×4 Bayer ordered dithering (default: `true`, auto-disabled when `color2` is fully transparent) |
+| `layer` | number \| string | — | Target layer index, name, or `layer_id` |
+| `frame` | number | — | Target frame index |
+
+---
+
+### `eval_gdscript` ⚡ Dynamic In-Engine GDScript Execution
+Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides direct access to `image` (`Image`), `project`, `api` (`ExtensionsApi`), and Godot classes for procedural generation, noise fields, and custom drawing loops in milliseconds. Automatically creates an undo action so modifications are completely reversible.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | ✅ | GDScript code to execute. Can define `func run(api, image: Image, project, params: Dictionary)` or provide script statements directly mutating `image` |
+| `layer` | number \| string | — | Target layer index, name, or stable `layer_id` (defaults to active layer) |
+| `frame` | number | — | Target frame index (defaults to active frame) |
+| `params` | object | — | Optional custom dictionary passed into the script |
+
+```gdscript
+# Example 1: Bare statements (image is directly provided)
+for y in range(image.get_height()):
+    for x in range(image.get_width()):
+        if (x + y) % 4 == 0:
+            image.set_pixel(x, y, Color.CYAN)
+return "procedural pass complete"
+
+# Example 2: Function form with custom parameters
+func run(api, image: Image, project, params: Dictionary) -> void:
+    var radius = params.get("radius", 10)
+    image.fill_rect(Rect2i(20, 20, radius, radius), Color.MAGENTA)
+```
 
 ---
 
@@ -964,7 +1061,29 @@ Render crisp bitmap pixel typography directly onto the canvas.
 ---
 
 ### `get_palette_usage`
-Get a frequency histogram of every color on the canvas.
+Get a frequency histogram and palette breakdown of colors on the canvas or active cel. Automatically bounded to prevent LLM context overflows on noisy textures.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `top` | number | `32` | Maximum number of top color entries to return in the list (0 for all) |
+| `all_layers` | boolean | `true` | Analyze composite canvas (`true`) or active cel only (`false`) |
+| `layer` | number \| string | — | Target layer when `all_layers: false` |
+| `frame` | number | current | Target frame index |
+
+```json
+{
+  "success": true,
+  "data": {
+    "unique_colors_count": 16615,
+    "total_colored_pixels": 166678,
+    "top": 32,
+    "colors": [
+      { "color": "#1a1c23ff", "count": 45210, "percentage": 27.1 },
+      { "color": "#3f465eff", "count": 21890, "percentage": 13.1 }
+    ]
+  }
+}
+```
 
 ---
 
@@ -975,4 +1094,5 @@ Scan and remove 1px orphan noise pixels.
 
 ### `remap_to_palette`
 Quantize and snap canvas pixels to the nearest colors in a target palette.
+
 

@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, layerHandleSchema } from "../utils/schema_helpers.js";
 
 export function registerColorTools(server: McpServer): void {
   server.tool(
@@ -84,7 +84,7 @@ export function registerColorTools(server: McpServer): void {
       preserve_alpha: coerceBool()
         .default(false)
         .describe("If true, retains each target pixel's existing alpha channel instead of replacing with new_color's alpha (defaults to false)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ old_color, new_color, tolerance, preserve_alpha, layer, frame }) => {
@@ -116,7 +116,7 @@ export function registerColorTools(server: McpServer): void {
       value: coerceFloat(0, 5)
         .default(1.0)
         .describe("Value/Brightness multiplier (0 = black, 1.0 = original, 1.5 = brighter)"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ hue_shift, saturation, value, layer, frame }) => {
@@ -316,24 +316,33 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "get_palette_usage",
-    "Analyze the palette usage of the canvas (or a specific layer) and return an exact histogram of all unique colors used, total pixel counts, and percentages.",
+    "Analyze the palette usage of the canvas (or a specific layer) and return an exact histogram of top colors used, total pixel counts, and percentages.",
     {
       all_layers: coerceBool().default(true).describe("If true, analyzes the full composite of all visible layers. If false, analyzes only the specified or active layer."),
-      layer: coerceInt(0).optional().describe("Target layer index to analyze when all_layers is false (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt(0).optional().describe("Target frame index to analyze (defaults to active frame)"),
+      top: coerceInt(1, 256).default(32).describe("Maximum number of top colors to return in detailed listing (defaults to 32)"),
     },
-    async ({ all_layers, layer, frame }) => {
-      const result = await sendCommand("get_palette_usage", { all_layers, layer, frame });
+    async ({ all_layers, layer, frame, top }) => {
+      const result = await sendCommand("get_palette_usage", { all_layers, layer, frame, top });
       if (result.success && result.data) {
-        const colors = (result.data.colors as Array<{ color: string; count: number; percentage: number }>)
-          .slice(0, 32)
+        const d = result.data;
+        const colorList = (d.colors as Array<{ color: string; count: number; percentage: number }>) || [];
+        const topLimit = top ?? 32;
+        const displayed = colorList.slice(0, topLimit);
+        let colorsText = displayed
           .map((c) => `  ${c.color}: ${c.count} px (${c.percentage}%)`)
           .join("\n");
+
+        if (d.unique_colors_count > displayed.length) {
+          colorsText += `\n  ... and ${d.unique_colors_count - displayed.length} more unique colors.`;
+        }
+
         return {
           content: [
             {
               type: "text" as const,
-              text: `🎨 Palette Usage [${result.data.all_layers ? "Full Canvas Composite" : `Layer ${layer ?? "active"}`}] (${result.data.unique_colors_count} unique colors, ${result.data.total_colored_pixels} colored pixels):\n${colors}`,
+              text: `🎨 Palette Usage [${d.all_layers ? "Full Canvas Composite" : `Layer ${layer ?? "active"}`}] (${d.unique_colors_count} unique colors, ${d.total_colored_pixels} colored pixels):\n${colorsText}`,
             },
           ],
         };

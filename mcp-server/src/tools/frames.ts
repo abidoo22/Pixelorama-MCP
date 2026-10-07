@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, layerHandleSchema } from "../utils/schema_helpers.js";
 
 export function registerFrameTools(server: McpServer): void {
   // ── FRAME QUERIES ──────────────────────────────────────────────────────
@@ -224,7 +224,7 @@ export function registerFrameTools(server: McpServer): void {
     "Switch the active cel (frame + layer combination). This controls which cel subsequent drawing commands target.",
     {
       frame: coerceInt(0).describe("Frame index"),
-      layer: coerceInt(0).describe("Layer index"),
+      layer: layerHandleSchema.describe("Target layer index (0-based integer), stable layer ID, or layer name"),
     },
     async ({ frame, layer }) => {
       const result = await sendCommand("switch_cel", { frame, layer });
@@ -246,9 +246,9 @@ export function registerFrameTools(server: McpServer): void {
     "Copy pixel data from one cel to another. Useful for animation — copy frame 0 to frame 1 then make small changes.",
     {
       src_frame: coerceInt(0).describe("Source frame index"),
-      src_layer: coerceInt(0).describe("Source layer index"),
+      src_layer: layerHandleSchema.describe("Source layer index, ID, or name"),
       dst_frame: coerceInt(0).describe("Destination frame index"),
-      dst_layer: coerceInt(0).describe("Destination layer index"),
+      dst_layer: layerHandleSchema.describe("Destination layer index, ID, or name"),
     },
     async ({ src_frame, src_layer, dst_frame, dst_layer }) => {
       const result = await sendCommand("copy_cel", {
@@ -276,14 +276,13 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "clear_cel",
-    "Clear all pixels in a cel, making it fully transparent.",
+    "Clear all pixels in a cel, making it fully transparent. This action is recorded in history and can be undone using 'undo'.",
     {
       frame: coerceInt(0)
         .optional()
         .describe("Frame index (defaults to current frame)"),
-      layer: coerceInt(0)
-        .optional()
-        .describe("Layer index (defaults to current layer)"),
+      layer: layerHandleSchema
+        .describe("Target layer index (defaults to current layer), stable layer ID, or layer name"),
     },
     async ({ frame, layer }) => {
       const params: Record<string, unknown> = {};
@@ -295,7 +294,7 @@ export function registerFrameTools(server: McpServer): void {
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Cel cleared (frame:${result.data?.frame} layer:${result.data?.layer})`
+              ? `✅ Cel cleared on [frame:${result.data?.frame}, layer:${result.data?.layer}] (action is undoable with 'undo')`
               : `❌ ${result.error}`,
           },
         ],
@@ -391,7 +390,7 @@ export function registerFrameTools(server: McpServer): void {
     {
       src_frame: coerceInt(0).describe("Starting frame index"),
       dst_frame: coerceInt(0).describe("Ending frame index"),
-      layer: coerceInt(0).optional().describe("Layer index to tween (defaults to active layer)"),
+      layer: layerHandleSchema.describe("Layer index, ID, or name to tween (defaults to active layer)"),
       dx: coerceInt().default(0).describe("Total horizontal offset to interpolate across frames"),
       dy: coerceInt().default(0).describe("Total vertical offset to interpolate across frames"),
     },

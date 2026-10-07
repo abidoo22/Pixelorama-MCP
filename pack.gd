@@ -39,15 +39,24 @@ func _init():
 
 	print("Successfully packed PixMcpBridge.pck")
 
-	# Also copy to pixelorama-plugin/PixMcpBridge.pck
+	# Copy to extension directories
+	var copy_paths = [
+		"pixelorama-plugin/PixMcpBridge.pck",
+		"/home/abido/.local/share/pixelorama/extensions/PixMcpBridge.pck",
+		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/Extensions/PixMcpBridge.pck"
+	]
 	var src = FileAccess.open("PixMcpBridge.pck", FileAccess.READ)
 	if src:
 		var bytes = src.get_buffer(src.get_length())
 		src.close()
-		var dst = FileAccess.open("pixelorama-plugin/PixMcpBridge.pck", FileAccess.WRITE)
-		if dst:
-			dst.store_buffer(bytes)
-			dst.close()
-			print("Copied to pixelorama-plugin/PixMcpBridge.pck")
+		for path in copy_paths:
+			var dir = path.get_base_dir()
+			if not DirAccess.dir_exists_absolute(dir):
+				DirAccess.make_dir_recursive_absolute(dir)
+			var dst = FileAccess.open(path, FileAccess.WRITE)
+			if dst:
+				dst.store_buffer(bytes)
+				dst.close()
+				print("Copied to %s" % path)
 
 	quit(0)

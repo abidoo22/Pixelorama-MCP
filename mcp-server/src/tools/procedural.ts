@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, layerHandleSchema } from "../utils/schema_helpers.js";
 
 // Helper: Convert Hex to RGB
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -246,7 +246,7 @@ export function registerProceduralTools(server: McpServer): void {
       as_new_layer: coerceBool()
         .default(false)
         .describe("If true, places the glow on a dedicated layer inserted directly above the target layer with ADD blend mode"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ radius, color, intensity, source_color, tolerance, luminance_threshold, falloff, rect, as_new_layer, layer, frame }) => {
@@ -275,38 +275,57 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "apply_gradient",
-    "Fill a region with a smooth linear or radial color gradient, with optional ordered dithering (Bayer 4x4 matrix). Automatically clips to active selection if one exists.",
+    "Fill a region with a smooth linear, radial, or elliptical color gradient, with optional ordered dithering (Bayer 4x4 matrix), customizable falloff curves (smoothstep, inverse_square, exponential), feathering, and alpha-blending. Automatically clips to active selection if one exists.",
     {
       x1: coerceInt(0).default(0).describe("Top-left X of gradient area"),
       y1: coerceInt(0).default(0).describe("Top-left Y of gradient area"),
-      x2: coerceInt(1).default(64).describe("Bottom-right X of gradient area"),
-      y2: coerceInt(1).default(64).describe("Bottom-right Y of gradient area"),
+      x2: coerceInt(0).default(64).describe("Bottom-right X of gradient area"),
+      y2: coerceInt(0).default(64).describe("Bottom-right Y of gradient area"),
       color1: z.string().default("#ffffff").describe("Start hex color"),
       color2: z.string().default("#000000").describe("End hex color"),
-      dither: coerceBool().default(true).describe("Enable Bayer ordered dithering"),
-      type: z.enum(["linear", "radial"]).default("linear").describe("Gradient type: 'linear' or 'radial'"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      blend: coerceBool().default(true).describe("If true, alpha-blends over underlying pixels instead of overwriting them"),
+      dither: coerceBool().optional().describe("Enable Bayer ordered dithering (default: true for opaque gradients, auto-disabled for transparent/alpha endpoints)"),
+      type: z.enum(["linear", "radial", "elliptical", "circle", "ellipse", "horizontal", "vertical"]).default("linear").describe("Gradient type / shape: 'linear', 'radial' (circular), or 'elliptical'"),
+      shape: z.enum(["linear", "radial", "elliptical", "circle", "ellipse", "horizontal", "vertical"]).optional().describe("Alternative alias for type"),
+      direction: z.enum(["vertical", "horizontal", "auto"]).default("auto").describe("Gradient direction for linear gradients: 'auto' (default, infers horizontal if width > height, else vertical), 'horizontal', or 'vertical'"),
+      falloff: z.enum(["linear", "smoothstep", "smooth", "inverse_square", "exponential", "exp", "feather"]).default("linear").describe("Falloff curve: 'linear', 'smoothstep', 'inverse_square', or 'exponential'"),
+      feather: coerceFloat(0.0, 1.0).default(0.0).describe("Feather edge softening amount (0.0 to 1.0)"),
+      alpha: coerceFloat(0.0, 1.0).default(1.0).describe("Optional overall opacity multiplier (0.0 to 1.0, default: 1.0)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x1, y1, x2, y2, color1, color2, dither, type, layer, frame }) => {
-      const result = await sendCommand("apply_gradient", {
+    async ({ x1, y1, x2, y2, color1, color2, blend, dither, type, shape, direction, falloff, feather, alpha, layer, frame }) => {
+      const gradType = shape || type;
+      const payload: Record<string, unknown> = {
         x1,
         y1,
         x2,
         y2,
         color1,
         color2,
-        dither,
-        type,
+        blend,
+        type: gradType,
+        shape: gradType,
+        direction,
+        falloff,
+        feather,
+        alpha,
         layer,
         frame,
-      });
+      };
+      if (dither !== undefined) {
+        payload.dither = dither;
+      }
+      const result = await sendCommand("apply_gradient", payload);
+      const ditherDesc = result.data?.dither ? "Bayer dithering" : "smooth blend";
+      const resolvedDir = result.data?.direction || "linear";
+      const inferredDir = result.data?.inferred_direction || resolvedDir;
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ ${type.toUpperCase()} Gradient applied with ${dither ? "Bayer dithering" : "smooth blend"} from ${color1} to ${color2} on [frame:${result.data?.frame}, layer:${result.data?.layer}]${result.data?.selection_clipped ? " (clipped to selection)" : ""}`
+              ? `✅ ${gradType.toUpperCase()} Gradient [direction: "${resolvedDir}", inferred_direction: "${inferredDir}", dither: ${Boolean(result.data?.dither)}] (${resolvedDir} direction, ${falloff} falloff) applied with ${ditherDesc} from ${color1} to ${color2} (blend: ${blend}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]${result.data?.selection_clipped ? " (clipped to selection)" : ""}`
               : `❌ ${result.error}`,
           },
         ],
@@ -322,7 +341,7 @@ export function registerProceduralTools(server: McpServer): void {
       tile_height: coerceInt(1).optional().describe("Tile height in pixels for multi-tile tilesets (defaults to full canvas height)"),
       fix_seams: coerceBool().default(false).describe("If true, automatically blends/fixes border seams to make tiles seamless"),
       dry_run: coerceBool().default(false).describe("If true with fix_seams, simulates seam correction without modifying canvas pixels"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ tile_width, tile_height, fix_seams, dry_run, layer, frame }) => {
@@ -366,7 +385,7 @@ export function registerProceduralTools(server: McpServer): void {
       y: coerceInt().default(0).describe("Starting Y position in pixels"),
       color: z.string().default("#ffffff").describe("Font hex color"),
       font_size: coerceInt(4, 32).default(8).describe("Font line height in pixels"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ text, x, y, color, font_size, layer, frame }) => {
@@ -385,6 +404,36 @@ export function registerProceduralTools(server: McpServer): void {
             type: "text" as const,
             text: result.success
               ? `✅ Rendered "${text}" (${result.data?.chars_drawn} characters) at (${x}, ${y}) with color ${color} on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              : `❌ ${result.error}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ── eval_gdscript ──────────────────────────────────────────────────────────
+  server.tool(
+    "eval_gdscript",
+    "Execute custom GDScript code natively inside Pixelorama. The script runs with direct access to 'api' (ExtensionsApi), 'image' (target Cel Image), 'project', and 'params'. Ideal for procedural texture passes, noise generation, mathematical gradients, and bulk loops that run in milliseconds.",
+    {
+      code: z
+        .string()
+        .describe("GDScript code. Can define 'func run(api, image: Image, project, params: Dictionary):' or provide script statements that mutate 'image'."),
+      layer: layerHandleSchema,
+      frame: coerceInt(0).optional().describe("Optional target frame index (defaults to active frame)"),
+      params: z
+        .record(z.any())
+        .optional()
+        .describe("Optional key-value parameters dictionary passed into script"),
+    },
+    async ({ code, layer, frame, params }) => {
+      const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {} }, 60_000);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: result.success
+              ? `⚡ GDScript executed successfully on [frame:${result.data?.frame}, layer:${result.data?.layer}]: ${JSON.stringify(result.data?.result ?? "ok")}`
               : `❌ ${result.error}`,
           },
         ],
