@@ -1033,10 +1033,12 @@ Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides 
 **Key Capabilities:**
 - **Bulk Image / Buffer Returns**: The script can directly construct and return a new `Image` or raw `PackedByteArray` (RGBA8/RGB8) to replace the canvas in one step, avoiding per-pixel overhead ($< 0.1$ ms).
 - **Auto-Canvas Adaptation**: If `run()` returns an `Image` with different dimensions from the project, Pixelorama automatically resizes all cels and the project canvas to fit the new artwork.
-- **Transparent Bounds Guarding & Crash Immunity**: All `image.set_pixel()` and `image.get_pixel()` calls are automatically bounds-checked in-engine. Out-of-bounds writes safely clip and report diagnostic counts in the tool response rather than crashing the engine.
+- **Transparent Bounds Guarding & Crash Immunity**: All `image.set_pixel()` and `image.get_pixel()` calls are automatically bounds-checked in-engine. Calls to `.get_width()` and `.get_height()` are transparently rewritten with safe null guards so uninitialized images safely return 0 instead of triggering native `SIGSEGV` faults.
 - **Cross-Layer Read Access & Helpers via `api`**:
   - `api.get_pixel(x, y, layer, frame)` — Read color from any layer by index, name, or UUID.
-  - `api.get_layer_image(layer, frame)` — Return a safe clone of any layer's `Image` for multi-pixel reads (e.g. reflections).
+  - `api.get_layer_image(layer, frame)` — Return a safe clone of any layer's `Image`. If the layer does not exist or is empty, safely returns an empty transparent canvas-sized `Image` fallback instead of null to prevent null pointer crashes.
+  - `api.has_layer(layer)` — Returns `bool` indicating whether a layer exists by index, name, or UUID.
+  - `api.is_valid_image(image)` — Returns `bool` checking if an image object is non-null and non-empty.
   - `api.get_composite_image(frame)` — Return the blended canvas image up to the current frame.
   - `api.get_layers()` — Query metadata and names of all layers.
   - `api.get_canvas_size()` — Returns `Vector2i` dimensions of the canvas.
@@ -1049,7 +1051,7 @@ Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides 
   - **Typed math functions**: Use `maxf()` / `maxi()` instead of generic `max()` when operands involve Variant expressions.
 - **Memory Bounding with `record_undo`**: When running heavy multi-layer procedural passes (e.g. 14 layers generating 330+ KB full-canvas buffers), set `record_undo: false` to commit directly to cels without pushing intermediate images to the UndoRedo stack, saving hundreds of megabytes of editor RAM.
 - **Inline Safe Cast Sanitizer**: Transparently strips dangerous inline casts like `(expr as PackedFloat32Array)[x]` so Godot evaluates subscripting dynamically instead of crashing release builds with native `SIGSEGV` page faults.
-- **Serialized FIFO Execution & 120s Timeout**: All bridge operations are strictly serialized via a FIFO command queue to guarantee thread-safety and eliminate race conditions. Timeout is 120,000ms.
+- **Execution Watchdog & Bounded Wait**: Main thread execution is protected by a 60-second watchdog with bounded semaphore polling (`try_wait`). Long or hanging scripts cleanly abort with HTTP 504 without locking the background thread or making `/health` unresponsive.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

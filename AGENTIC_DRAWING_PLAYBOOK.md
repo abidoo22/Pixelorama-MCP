@@ -134,13 +134,15 @@ await cmd("eval_gdscript", {
 ```
 
 ### Multi-Layer Sampling & Reflections (Water / Mirrors)
-Use `api.get_layer_image(layer_name)` to sample underlying layers directly without reimplementing shaders:
+Use `api.get_layer_image(layer_name)` to sample underlying layers directly without reimplementing shaders. In v2.7+, `get_layer_image` safely returns a transparent canvas-sized Image fallback if the layer does not exist, and `api.has_layer(name)` is available for pre-checks:
 
 ```javascript
 await cmd("eval_gdscript", {
   layer: "Lake",
   code: `
     func run(api, image: Image, project, params: Dictionary):
+        if not api.has_layer("Sky"):
+            return "Sky layer not found"
         var sky_img = api.get_layer_image("Sky")
         for y in range(image.get_height()):
             var sample_y = clamp(image.get_height() - y - 1, 0, sky_img.get_height() - 1)
@@ -221,6 +223,10 @@ const stats = await cmd("eval_gdscript", {
      record_undo: false
    });
    ```
+7. **Null-Safety & Execution Watchdog (v2.7+):** 
+   - Never assume an image reference is non-null. In Godot release builds, invoking `.get_width()` or `.get_height()` on `null` triggers native `SIGSEGV`! In v2.7+, `api.get_layer_image()` returns an empty canvas-sized fallback `Image` on missing layers, and the bridge transparently rewrites `.get_width()` and `.get_height()` with safe null guards.
+   - The bridge features a 60-second main thread execution watchdog with a bounded semaphore loop: long scripts that hang will return HTTP 504 without permanently blocking the bridge listener or `/health`.
+
 
 ---
 

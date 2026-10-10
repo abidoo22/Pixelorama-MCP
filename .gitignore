@@ -1,32 +1,50 @@
 # Dependencies
 node_modules/
+mcp-server/node_modules/
 
-# Build output
+# Build output & caches
 mcp-server/dist/
+*.tsbuildinfo
 
-# Environment
+# Environment & local secrets
 .env
 .env.local
+.env.*.local
 
-# IDE
+# IDE & Editor artifacts
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+*.bak
 
-# OS
+# OS artifacts
 .DS_Store
 Thumbs.db
+.directory
 
-# Logs
+# Logs & debug dumps
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+core
+core.*
+vgcore.*
 
-# Godot
+# Godot engine artifacts & caches
 .godot/
 *.import
+.running
+shader_cache/
 
-# Scratch and Temporary files
+# Local Pixelorama data & backups
+pixelorama_data/
+backups/
+
+# Scratch, test exports, and local sources
 scratch/
 pixelorama-source/
-
+test_out*

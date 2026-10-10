@@ -177,6 +177,7 @@ func _resolve_layer_index(params: Dictionary, project = null) -> int:
 			var lyr = project.layers[i]
 			if _get_or_create_layer_id(lyr) == target_id:
 				return i
+		return -1
 
 	# Priority 2: layer_name
 	if params.has("layer_name"):
@@ -184,6 +185,7 @@ func _resolve_layer_index(params: Dictionary, project = null) -> int:
 		for i in range(project.layers.size()):
 			if project.layers[i].name == target_name:
 				return i
+		return -1
 
 	# Priority 3: index parameter (may be integer or string name/id)
 	if params.has("index"):
@@ -195,6 +197,7 @@ func _resolve_layer_index(params: Dictionary, project = null) -> int:
 					return i
 			if s.is_valid_int():
 				return int(s)
+			return -1
 		else:
 			return int(val)
 
@@ -208,6 +211,7 @@ func _resolve_layer_index(params: Dictionary, project = null) -> int:
 					return i
 			if s.is_valid_int():
 				return int(s)
+			return -1
 		else:
 			return int(val)
 
@@ -5210,7 +5214,8 @@ class ApiContext extends RefCounted:
 		if _project == null:
 			return Color.TRANSPARENT
 		var f_idx: int = frame if frame >= 0 else _project.current_frame
-		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if layer != -1 else _project.current_layer
+		var has_custom_layer := not (typeof(layer) == TYPE_INT and layer == -1)
+		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if has_custom_layer else _project.current_layer
 		if f_idx < 0 or f_idx >= _project.frames.size() or l_idx < 0 or l_idx >= _project.layers.size():
 			return Color.TRANSPARENT
 		var cel = _project.frames[f_idx].cels[l_idx]
@@ -5221,24 +5226,51 @@ class ApiContext extends RefCounted:
 			return Color.TRANSPARENT
 		return img.get_pixel(x, y)
 
-	func get_layer_image(layer = -1, frame: int = -1) -> Image:
+	func get_layer_image(layer = -1, frame: int = -1, fallback_empty: bool = true) -> Image:
+		var w: int = int(_project.size.x) if _project else 64
+		var h: int = int(_project.size.y) if _project else 64
 		if _project == null:
-			return null
+			return Image.create(w, h, false, Image.FORMAT_RGBA8) if fallback_empty else null
 		var f_idx: int = frame if frame >= 0 else _project.current_frame
-		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if layer != -1 else _project.current_layer
+		var has_custom_layer := not (typeof(layer) == TYPE_INT and layer == -1)
+		var l_idx: int = _handler._resolve_layer_index({"layer": layer}, _project) if has_custom_layer else _project.current_layer
 		if f_idx < 0 or f_idx >= _project.frames.size() or l_idx < 0 or l_idx >= _project.layers.size():
-			return null
+			return Image.create(w, h, false, Image.FORMAT_RGBA8) if fallback_empty else null
 		var cel = _project.frames[f_idx].cels[l_idx]
 		if cel == null or cel.get_class_name() != "PixelCel":
-			return null
+			return Image.create(w, h, false, Image.FORMAT_RGBA8) if fallback_empty else null
 		var img: Image = cel.get_image()
-		return img.duplicate() if img else null
+		if img == null:
+			return Image.create(w, h, false, Image.FORMAT_RGBA8) if fallback_empty else null
+		return img.duplicate()
+
+	func has_layer(layer) -> bool:
+		if _project == null:
+			return false
+		if typeof(layer) == TYPE_INT:
+			return layer >= 0 and layer < _project.layers.size()
+		var s: String = str(layer).strip_edges()
+		for i in range(_project.layers.size()):
+			if _handler._get_or_create_layer_id(_project.layers[i]) == s or _project.layers[i].name == s:
+				return true
+		if s.is_valid_int():
+			var idx := int(s)
+			return idx >= 0 and idx < _project.layers.size()
+		return false
+
+	func is_valid_image(img: Variant) -> bool:
+		return img is Image and img != null and not img.is_empty()
 
 	func get_composite_image(frame: int = -1) -> Image:
+		var w: int = int(_project.size.x) if _project else 64
+		var h: int = int(_project.size.y) if _project else 64
 		if _project == null:
-			return null
+			return Image.create(w, h, false, Image.FORMAT_RGBA8)
 		var f_idx: int = frame if frame >= 0 else _project.current_frame
-		return _handler._composite_frame_layers(_project, f_idx)
+		var res: Image = _handler._composite_frame_layers(_project, f_idx)
+		if res == null:
+			return Image.create(w, h, false, Image.FORMAT_RGBA8)
+		return res
 
 	func get_layers() -> Array:
 		var list: Array = []
@@ -5462,6 +5494,17 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	if regex_get_px.is_valid():
 		full_source = regex_get_px.sub(full_source, "_safe_get_pixel($1, ", true)
 
+	# Safe get_width / get_height guarding: rewrite .get_width() and .get_height() calls to prevent native SIGSEGV on null instances
+	var regex_get_w := RegEx.new()
+	regex_get_w.compile("\\b([a-zA-Z0-9_]+)\\.get_width\\s*\\(\\s*\\)")
+	if regex_get_w.is_valid():
+		full_source = regex_get_w.sub(full_source, "_safe_get_width($1)", true)
+
+	var regex_get_h := RegEx.new()
+	regex_get_h.compile("\\b([a-zA-Z0-9_]+)\\.get_height\\s*\\(\\s*\\)")
+	if regex_get_h.is_valid():
+		full_source = regex_get_h.sub(full_source, "_safe_get_height($1)", true)
+
 	# Safe cast guarding: strip inline unsafe casts like '(expr as PackedFloat32Array)[x]' or 'expr as Array[x]'
 	# In Godot release builds, static indexing on 'as Packed*Array' crashes C++ with SIGSEGV if the cast yields null.
 	# Stripping 'as Packed*Array' allows dynamic Variant indexing, which safely raises a GDScript error instead of crashing.
@@ -5470,7 +5513,7 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	if regex_unsafe_cast.is_valid():
 		full_source = regex_unsafe_cast.sub(full_source, "", true)
 
-	var safe_helpers := "\n\nstatic var _clipped_pixel_count: int = 0\n\nstatic func _safe_set_pixel(img: Image, px: int, py: int, col: Color) -> void:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\timg.set_pixel(px, py, col)\n\telse:\n\t\t_clipped_pixel_count += 1\n\nstatic func _safe_get_pixel(img: Image, px: int, py: int) -> Color:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\treturn img.get_pixel(px, py)\n\treturn Color(0, 0, 0, 0)\n"
+	var safe_helpers := "\n\nstatic var _clipped_pixel_count: int = 0\n\nstatic func _safe_get_width(img: Variant) -> int:\n\tif img != null and img.has_method(\"get_width\"):\n\t\treturn img.get_width()\n\treturn 0\n\nstatic func _safe_get_height(img: Variant) -> int:\n\tif img != null and img.has_method(\"get_height\"):\n\t\treturn img.get_height()\n\treturn 0\n\nstatic func _safe_set_pixel(img: Variant, px: int, py: int, col: Color) -> void:\n\tif img != null and img.has_method(\"set_pixel\") and img.has_method(\"get_width\") and img.has_method(\"get_height\"):\n\t\tif px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\t\timg.set_pixel(px, py, col)\n\t\t\treturn\n\t_clipped_pixel_count += 1\n\nstatic func _safe_get_pixel(img: Variant, px: int, py: int) -> Color:\n\tif img != null and img.has_method(\"get_pixel\") and img.has_method(\"get_width\") and img.has_method(\"get_height\"):\n\t\tif px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\t\treturn img.get_pixel(px, py)\n\treturn Color(0, 0, 0, 0)\n"
 	full_source += safe_helpers
 
 	var log_pos_before_compile := _get_godot_log_pos()

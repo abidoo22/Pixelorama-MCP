@@ -20,6 +20,7 @@ class PendingRequest extends RefCounted:
 	var params: Dictionary = {}
 	var response: Dictionary = {}
 	var semaphore: Semaphore = Semaphore.new()
+	var timed_out: bool = false
 
 
 func _enter_tree() -> void:
@@ -151,7 +152,12 @@ func _process_http_request(peer: StreamPeerTCP, buffer: PackedByteArray, header_
 	elif method == "POST" and path == "/command":
 		var result := _dispatch_command_to_main_thread(body)
 		response_body = JSON.stringify(result)
-		status_code = 200 if result.get("success", false) else 400
+		if result.get("success", false):
+			status_code = 200
+		elif str(result.get("error", "")).find("timed out") != -1:
+			status_code = 504
+		else:
+			status_code = 400
 
 	elif method == "GET" and path == "/tools":
 		var tools: Array = _command_handler.get_available_tools() if _command_handler else []
@@ -206,12 +212,34 @@ func _dispatch_command_to_main_thread(body: String) -> Dictionary:
 	req.params = params
 
 	call_deferred("_execute_on_main_thread", req)
-	req.semaphore.wait()
+
+	const EXEC_TIMEOUT_MS := 60000
+	var start_exec := Time.get_ticks_msec()
+	var completed := false
+	while _is_running:
+		if req.semaphore.try_wait():
+			completed = true
+			break
+		if Time.get_ticks_msec() - start_exec > EXEC_TIMEOUT_MS:
+			break
+		OS.delay_msec(2)
+
+	if not completed:
+		req.timed_out = true
+		push_warning(LOG_TAG + "Execution timed out for tool '%s' after %d ms" % [tool_name, EXEC_TIMEOUT_MS])
+		return {
+			"success": false,
+			"error": "Command execution timed out on main thread after %d ms" % EXEC_TIMEOUT_MS
+		}
 
 	return req.response
 
 
 func _execute_on_main_thread(req: PendingRequest) -> void:
+	if req.timed_out:
+		req.semaphore.post()
+		return
+
 	if _command_handler != null:
 		req.response = _command_handler.execute(req.tool_name, req.params)
 	else:
@@ -226,6 +254,7 @@ func _status_text(code: int) -> String:
 		400: return "Bad Request"
 		404: return "Not Found"
 		500: return "Internal Server Error"
+		504: return "Gateway Timeout"
 	return "Unknown"
 
 
