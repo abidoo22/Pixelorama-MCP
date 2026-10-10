@@ -44,7 +44,8 @@ func _init():
 		"pixelorama-plugin/PixMcpBridge.pck",
 		"/home/abido/.local/share/pixelorama/extensions/PixMcpBridge.pck",
 		"/home/abido/.local/share/pixelorama/Extensions/PixMcpBridge.pck",
-		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/Extensions/PixMcpBridge.pck"
+		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/Extensions/PixMcpBridge.pck",
+		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/extensions/PixMcpBridge.pck"
 	]
 	var src = FileAccess.open("PixMcpBridge.pck", FileAccess.READ)
 	if src:

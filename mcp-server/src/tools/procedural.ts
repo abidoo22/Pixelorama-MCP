@@ -438,9 +438,12 @@ export function registerProceduralTools(server: McpServer): void {
         .record(z.any())
         .optional()
         .describe("Optional key-value parameters dictionary passed into script (e.g. { width: 320, height: 180 })"),
+      record_undo: coerceBool()
+        .optional()
+        .describe("If true (default), records this change in Pixelorama's Undo/Redo history. Set to false during heavy multi-layer bulk procedural generation passes to drastically conserve editor memory."),
     },
-    async ({ code, layer, frame, params }) => {
-      const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {} }, 120_000);
+    async ({ code, layer, frame, params, record_undo }) => {
+      const result = await sendCommand("eval_gdscript", { code, layer, frame, params: params ?? {}, record_undo: record_undo ?? true }, 120_000);
       const resVal = result.data?.result;
       const val = result.data?.value;
       const resStr = resVal !== undefined ? JSON.stringify(resVal) : "completed";

@@ -210,6 +210,17 @@ const stats = await cmd("eval_gdscript", {
 2. **Typed Math Functions:** In GDScript 4, when evaluating expressions involving untyped arrays or Variants, prefer typed functions like `maxf()`, `maxi()`, `minf()`, `mini()`, `floorf()`, `roundf()`, or `clampi()` over polymorphic `max()` / `min()`.
 3. **Serialized Queue & Timeout:** The bridge queues commands in a strict FIFO pipeline so operations never race or corrupt the active cel. Default socket and HTTP timeouts are set to 120 seconds. If an operation times out, do not blindly retry — check the canvas state first via `get_pixels` or `capture_canvas_image`.
 4. **Auto-Resize on Returned Image/Buffer:** If `run()` returns an `Image` or `PackedByteArray` whose dimensions differ from the canvas, Pixelorama automatically resizes all cels and camera to match. In v2.5+, the tool returns an explicit warning (`⚠️ Canvas automatically resized from WxH to WxH because returned buffer had different dimensions`) so you are immediately alerted if a test image resized your working canvas.
+5. **CRITICAL — Avoid Inline Typed Array Casts `(expr as Packed*Array)[i]`:** In Godot release builds, static indexing on `as Packed*Array` emits unchecked typed VM opcodes. If `expr` is not that type (or null), Godot's C++ operator dereferences a null pointer, causing a fatal hardware `SIGSEGV`!
+   * ❌ **Dangerous:** `if float(y) >= (a0[0] as PackedFloat32Array)[x]:` (crashes C++ if `a0[0]` is a float).
+   * ✅ **Correct:** `var sm: PackedFloat32Array = tops[k]; if float(y) >= sm[x]:` (clean flat indexing).
+   *(Note: v2.6+ includes bridge-side regex sanitization that strips unsafe inline `as Packed*Array` before subscripting to force safe dynamic Variant indexing, but scripts should always follow clean typed structure).*
+6. **Memory Bounding with `record_undo: false`:** For heavy multi-layer procedural passes (e.g. 14 layers on 384×216 generating 331 KB per layer), pushing every intermediate pass to the `UndoRedo` stack balloons editor RAM to 450+ MB. Set `record_undo: false` on intermediate bulk passes to blit directly to the cel with zero undo stack overhead:
+   ```javascript
+   await cmd("eval_gdscript", {
+     code: `func run(api, image: Image, project, params: Dictionary) -> PackedByteArray: ...`,
+     record_undo: false
+   });
+   ```
 
 ---
 

@@ -269,7 +269,7 @@ func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
 	return {"error": "", "image": cel.get_image().duplicate(), "frame": frame_idx, "layer": layer_idx, "cel": cel}
 
 
-func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1) -> void:
+func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1, record_undo: bool = true) -> void:
 	## Commits the modified image through Pixelorama's undo system.
 	## This ensures every AI action is undoable by the user.
 	var project = _api.project.current_project
@@ -293,7 +293,7 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 	var cel_image: Image = cel.get_image()
 	image.convert(project.get_image_format())
 
-	var ur = project.undo_redo
+	var ur = project.undo_redo if record_undo else null
 	if ur:
 		ur.create_action(action_name)
 		var undo_data := {}
@@ -329,9 +329,15 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 			ur.add_undo_method(global_node.undo_or_redo.bind(true, frame_idx, layer_idx, project))
 		ur.commit_action()
 	else:
-		# Fallback if undo_redo not available
+		# Fallback if undo_redo not available or record_undo is false
 		cel_image.fill(0)
 		cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+		if cel_image.has_method("convert_rgb_to_indexed"):
+			cel_image.convert_rgb_to_indexed()
+		if cel.has_method("update_tilemap"):
+			cel.update_tilemap()
+		if cel.has_method("update_texture"):
+			cel.update_texture()
 
 	# Select the current cel to trigger a switch/refresh signal
 	_api.project.select_cels([[frame_idx, layer_idx]])
@@ -5389,6 +5395,7 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	var script_params: Dictionary = {}
 	if params.has("params") and (params["params"] is Dictionary):
 		script_params = params["params"]
+	var record_undo: bool = bool(params.get("record_undo", true))
 
 	var full_source := ""
 	if code.find("func execute") != -1 or code.find("func run") != -1:
@@ -5454,6 +5461,14 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	regex_get_px.compile("\\b(?!(?:api)\\b)([a-zA-Z0-9_]+)\\.get_pixel\\s*\\(")
 	if regex_get_px.is_valid():
 		full_source = regex_get_px.sub(full_source, "_safe_get_pixel($1, ", true)
+
+	# Safe cast guarding: strip inline unsafe casts like '(expr as PackedFloat32Array)[x]' or 'expr as Array[x]'
+	# In Godot release builds, static indexing on 'as Packed*Array' crashes C++ with SIGSEGV if the cast yields null.
+	# Stripping 'as Packed*Array' allows dynamic Variant indexing, which safely raises a GDScript error instead of crashing.
+	var regex_unsafe_cast := RegEx.new()
+	regex_unsafe_cast.compile("\\s*\\bas\\s+(?:Packed[A-Za-z0-9]+Array|Array)(?=\\s*\\)\\s*\\[|\\s*\\[)")
+	if regex_unsafe_cast.is_valid():
+		full_source = regex_unsafe_cast.sub(full_source, "", true)
 
 	var safe_helpers := "\n\nstatic var _clipped_pixel_count: int = 0\n\nstatic func _safe_set_pixel(img: Image, px: int, py: int, col: Color) -> void:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\timg.set_pixel(px, py, col)\n\telse:\n\t\t_clipped_pixel_count += 1\n\nstatic func _safe_get_pixel(img: Image, px: int, py: int) -> Color:\n\tif img != null and px >= 0 and py >= 0 and px < img.get_width() and py < img.get_height():\n\t\treturn img.get_pixel(px, py)\n\treturn Color(0, 0, 0, 0)\n"
 	full_source += safe_helpers
@@ -5545,6 +5560,7 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	var log_pos_before_run := _get_godot_log_pos()
 	var result = instance.callv(method_name, call_args)
 
+	OS.delay_msec(25)
 	var log_tail_run := _extract_godot_log_tail(log_pos_before_run)
 	var runtime_err := _extract_runtime_error_from_log(log_tail_run, full_source)
 	if runtime_err != "":
@@ -5617,7 +5633,8 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 			}
 
 	if image != null:
-		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx)
+		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx, record_undo)
+		OS.delay_msec(1)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:

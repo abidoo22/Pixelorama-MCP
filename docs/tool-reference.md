@@ -1047,6 +1047,8 @@ Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides 
 - **Engine Quirks & Best Practices**:
   - **Function ordering**: Declare helper functions before calling them in `run()`, or keep script structure linear (Godot dynamic `reload()` parser quirk).
   - **Typed math functions**: Use `maxf()` / `maxi()` instead of generic `max()` when operands involve Variant expressions.
+- **Memory Bounding with `record_undo`**: When running heavy multi-layer procedural passes (e.g. 14 layers generating 330+ KB full-canvas buffers), set `record_undo: false` to commit directly to cels without pushing intermediate images to the UndoRedo stack, saving hundreds of megabytes of editor RAM.
+- **Inline Safe Cast Sanitizer**: Transparently strips dangerous inline casts like `(expr as PackedFloat32Array)[x]` so Godot evaluates subscripting dynamically instead of crashing release builds with native `SIGSEGV` page faults.
 - **Serialized FIFO Execution & 120s Timeout**: All bridge operations are strictly serialized via a FIFO command queue to guarantee thread-safety and eliminate race conditions. Timeout is 120,000ms.
 
 | Parameter | Type | Required | Description |
@@ -1055,6 +1057,7 @@ Executes GDScript dynamically inside Pixelorama/Godot at engine speed. Provides 
 | `layer` | number \| string | — | Target layer index, name, or stable `layer_id` (defaults to active layer) |
 | `frame` | number | — | Target frame index (defaults to active frame) |
 | `params` | object | — | Optional custom dictionary passed into the script |
+| `record_undo` | boolean | — | If true (default), records this change in Pixelorama's Undo/Redo history. Set to false during heavy multi-layer bulk procedural generation passes to drastically conserve editor memory |
 
 ```gdscript
 # Example 1: Custom Dictionary return (stats & counts)
