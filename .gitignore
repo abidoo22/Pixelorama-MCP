@@ -39,6 +39,7 @@ vgcore.*
 *.import
 .running
 shader_cache/
+PixMcpBridge-dev.pck
 
 # Local Pixelorama data & backups
 pixelorama_data/
