@@ -95,7 +95,7 @@ async function run() {
   await test("set_color", { color: "#ff5500", button: 0 });
   await test("get_color", {});
   await test("list_palettes", {});
-  await test("switch_palette", { name: "Default" });
+  await test("switch_palette", { name: "Pixelorama" });
   await test("create_palette", { name: "FullTestPal", width: 4, height: 4, is_global: true, colors: ["#ff0000", "#00ff00", "#0000ff", "#ffffff"] });
   await test("add_palette_color", { colors: ["#ffff00", "#ff00ff", "#00ffff"] });
   await test("set_palette_color", { index: 0, color: "#ff0088" });

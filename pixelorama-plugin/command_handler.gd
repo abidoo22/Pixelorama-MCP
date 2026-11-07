@@ -5749,6 +5749,23 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 
 	var api_ctx = ApiContext.new(_api, project, self)
 
+	# Scripts may access cel.get_image() directly and write in canvas
+	# coordinates. Pixelorama 1.2.4 cels start compact (often 1x1), so grow
+	# the cel image to cover the canvas first; the commit below shrinks it
+	# back to its used rect, preserving any out-of-canvas pixels.
+	# Only expand when the script actually touches cel images; scripts that
+	# merely read cel.offset must observe the compact geometry. Expand every
+	# cel of the target frame, since scripts may address any cel directly
+	# (e.g. project.frames[0].cels[0]) rather than the current one.
+	var cel_before_expand = target.get("cel", null) if full_source.contains("get_image") else null
+	var saved_cel_content = null
+	if cel_before_expand != null and cel_before_expand.has_method("copy_content"):
+		saved_cel_content = cel_before_expand.copy_content()
+	if cel_before_expand != null and project != null and frame_idx >= 0 and frame_idx < project.frames.size():
+		for frame_cel in project.frames[frame_idx].cels:
+			if frame_cel != null and frame_cel.has_method("ensure_canvas_rect_in_bounds"):
+				frame_cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
+
 	# Snapshot the cel and the working image so direct cel edits made by the
 	# script (offset changes, set_pixel on cel.get_image(), resizes) are not
 	# clobbered by committing the stale pre-run working image below.
@@ -5880,6 +5897,13 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 					image = _cel_to_canvas_image(cel_now, project)
 				if cel_changed:
 					should_commit = true
+
+	# A read-only script must leave the cel exactly as it found it: undo the
+	# temporary canvas expansion above when nothing is being committed.
+	if not should_commit and saved_cel_content != null and cel_before != null and cel_before.has_method("set_content"):
+		cel_before.set_content(saved_cel_content)
+		if cel_before.has_method("update_texture"):
+			cel_before.update_texture()
 
 	if should_commit and image != null:
 		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx, record_undo)
