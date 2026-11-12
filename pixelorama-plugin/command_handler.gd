@@ -868,11 +868,11 @@ func _cmd_get_canvas_snapshot(params: Dictionary) -> Dictionary:
 	var width: int = params.get("width", mini(image.get_width(), 64))
 	var height: int = params.get("height", mini(image.get_height(), 64))
 
-	# Clamp to canvas bounds
+	# Clamp to canvas bounds and cap region at 128x128 to keep JSON responses bounded
 	x = clampi(x, 0, image.get_width() - 1)
 	y = clampi(y, 0, image.get_height() - 1)
-	width = mini(width, image.get_width() - x)
-	height = mini(height, image.get_height() - y)
+	width = clampi(width, 1, mini(128, image.get_width() - x))
+	height = clampi(height, 1, mini(128, image.get_height() - y))
 
 	# Build a compact color map — unique colors indexed, then a grid of indices
 	var color_map: Dictionary = {}

@@ -145,7 +145,7 @@ A pre-compiled **`PixMcpBridge.pck`** plugin is already included right in the pr
 4. The bridge runs automatically in the background on `http://127.0.0.1:7373`. You can verify it anytime by opening `http://127.0.0.1:7373/health` in your browser or running:
    ```bash
    curl http://127.0.0.1:7373/health
-   # Returns: {"status":"ok","server":"pix-mcp-bridge","version":"0.2.2","pixelorama_version":"...","api_version":10}
+   # Returns: {"status":"ok","server":"pix-mcp-bridge","version":"0.2.3","pixelorama_version":"...","api_version":10}
    ```
 
 ### 3. Connect Your MCP Client

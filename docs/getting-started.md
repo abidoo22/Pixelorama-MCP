@@ -46,7 +46,7 @@ Expected response:
 {
   "status": "ok",
   "server": "pix-mcp-bridge",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "pixelorama_version": "v1.2.4-stable",
   "api_version": 10
 }

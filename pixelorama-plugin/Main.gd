@@ -1,11 +1,16 @@
 ## pix-MCP Bridge — Main Extension Entry Point
-## Uses a dedicated background Thread for instant TCP socket reception (even when minimized)
-## and safely dispatches all Pixelorama commands to the Main Thread via call_deferred + Semaphore
-## to prevent any OpenGL / SceneTree threading collisions or crashes.
+## Uses a dedicated background Thread with non-blocking multiplexed TCP client handling
+## (immune to idle browser preconnect sockets, slow readers, and unfocused SceneTree pauses)
+## and safely dispatches all Pixelorama commands to the Main Thread via call_deferred + Semaphore.
 extends Node
 
 const PORT: int = 7373
-const MAX_REQUEST_SIZE: int = 4194304  # 4 MB max request body
+const MAX_REQUEST_SIZE: int = 4194304       # 4 MB max request body + headers
+const MAX_RESPONSE_CHUNK: int = 65536       # max bytes written per poll via put_partial_data
+const MAX_CLIENTS: int = 32                 # max concurrent open TCP sockets
+const IDLE_HEADER_TIMEOUT_MS: int = 5000    # drop silent preconnect sockets quickly
+const BODY_READ_TIMEOUT_MS: int = 30000     # drop stalled partial request uploads
+const SEND_TIMEOUT_MS: int = 15000          # drop stalled/dead response readers
 
 var _server: TCPServer = TCPServer.new()
 var _thread: Thread = Thread.new()
@@ -24,6 +29,9 @@ class PendingRequest extends RefCounted:
 
 
 func _enter_tree() -> void:
+	# Keep extension active even when Pixelorama pauses SceneTree on focus loss
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
 	# Prevent Godot from deep-sleeping when unfocused/minimized
 	OS.low_processor_usage_mode = false
 	OS.low_processor_usage_mode_sleep_usec = 1000
@@ -47,68 +55,201 @@ func _enter_tree() -> void:
 
 	_is_running = true
 	_thread.start(_server_worker_loop)
-	print(LOG_TAG + "Thread-safe background listener active")
+	print(LOG_TAG + "Thread-safe multiplexed background listener active")
 
 
 func _server_worker_loop() -> void:
+	var clients: Array = []
+
 	while _is_running:
 		if not _server.is_listening():
 			OS.delay_msec(20)
 			continue
 
-		if _server.is_connection_available():
+		var did_work := false
+
+		# Accept incoming connections; if full, evict oldest silent socket without headers
+		while _server.is_connection_available():
+			if clients.size() >= MAX_CLIENTS:
+				var evicted := false
+				for idx in range(clients.size()):
+					var candidate: Dictionary = clients[idx]
+					if candidate["state"] == "recv" and not candidate["headers_parsed"]:
+						var old_peer: StreamPeerTCP = candidate["peer"]
+						old_peer.disconnect_from_host()
+						clients.remove_at(idx)
+						evicted = true
+						break
+				if not evicted:
+					break
+
 			var peer := _server.take_connection()
 			if peer:
-				_handle_peer_connection(peer)
-		else:
-			OS.delay_msec(2)
+				peer.set_no_delay(true)
+				var now := Time.get_ticks_msec()
+				clients.append({
+					"peer": peer,
+					"buffer": PackedByteArray(),
+					"headers_parsed": false,
+					"content_length": 0,
+					"header_end_index": -1,
+					"state": "recv",
+					"response": PackedByteArray(),
+					"response_sent": 0,
+					"connected_at": now,
+					"last_active": now,
+				})
+				did_work = true
 
+		# Poll all active clients non-blockingly and remove completed/stale ones in reverse order
+		var now := Time.get_ticks_msec()
+		for i in range(clients.size() - 1, -1, -1):
+			var client: Dictionary = clients[i]
+			var peer: StreamPeerTCP = client["peer"]
+			peer.poll()
 
-func _handle_peer_connection(peer: StreamPeerTCP) -> void:
-	var buffer := PackedByteArray()
-	var headers_parsed := false
-	var content_length := 0
-	var header_end_index := -1
-	var start_time := Time.get_ticks_msec()
-	const TIMEOUT_MS := 120000
+			var status := peer.get_status()
+			if status == StreamPeerTCP.STATUS_NONE or status == StreamPeerTCP.STATUS_ERROR:
+				clients.remove_at(i)
+				continue
+			if status == StreamPeerTCP.STATUS_CONNECTING:
+				if now - int(client["connected_at"]) > IDLE_HEADER_TIMEOUT_MS:
+					peer.disconnect_from_host()
+					clients.remove_at(i)
+				continue
 
-	while _is_running and peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
-		peer.poll()
-		var available := peer.get_available_bytes()
-		if available > 0:
-			var data := peer.get_data(mini(available, MAX_REQUEST_SIZE))
-			if data[0] == OK:
-				buffer.append_array(data[1])
+			if client["state"] == "respond":
+				if _flush_response_chunk(client):
+					did_work = true
+				var remaining: int = client["response"].size() - int(client["response_sent"])
+				if remaining <= 0:
+					peer.disconnect_from_host()
+					clients.remove_at(i)
+					continue
+				if now - int(client["last_active"]) > SEND_TIMEOUT_MS:
+					peer.disconnect_from_host()
+					clients.remove_at(i)
+					continue
+				continue
 
-		if not headers_parsed:
-			var header_end := _find_header_end(buffer)
-			if header_end != -1:
-				headers_parsed = true
-				header_end_index = header_end + 4
+			# state == "recv": read available request bytes
+			var available := peer.get_available_bytes()
+			if available > 0:
+				var read_cap := mini(available, MAX_REQUEST_SIZE - client["buffer"].size() + 1)
+				if read_cap > 0:
+					var data := peer.get_data(read_cap)
+					if data[0] == OK and data[1].size() > 0:
+						client["buffer"].append_array(data[1])
+						client["last_active"] = Time.get_ticks_msec()
+						did_work = true
 
-				var header_bytes := buffer.slice(0, header_end)
-				var header_str := header_bytes.get_string_from_utf8()
-				var lines := header_str.split("\r\n")
-				for line in lines:
-					if line.to_lower().begins_with("content-length:"):
-						content_length = int(line.split(":")[1].strip_edges())
-						break
+			if client["buffer"].size() > MAX_REQUEST_SIZE:
+				_queue_http_response(client, 413, JSON.stringify({"success": false, "error": "Payload too large"}))
+				_flush_response_chunk(client)
+				if int(client["response_sent"]) >= client["response"].size():
+					peer.disconnect_from_host()
+					clients.remove_at(i)
+				continue
 
-		if headers_parsed:
-			var body_received := buffer.size() - header_end_index
-			if body_received >= content_length:
-				_process_http_request(peer, buffer, header_end_index, content_length)
-				return
+			if not client["headers_parsed"]:
+				var header_end := _find_header_end(client["buffer"])
+				if header_end != -1:
+					client["headers_parsed"] = true
+					client["header_end_index"] = header_end + 4
 
-		if Time.get_ticks_msec() - start_time > TIMEOUT_MS:
-			push_warning(LOG_TAG + "Client request timed out")
+					var header_bytes: PackedByteArray = client["buffer"].slice(0, header_end)
+					var header_str := header_bytes.get_string_from_utf8()
+					var invalid_cl := false
+					for line in header_str.split("\r\n"):
+						if line.to_lower().begins_with("content-length:"):
+							var cl_str := line.substr(15).strip_edges()
+							if not cl_str.is_valid_int():
+								invalid_cl = true
+							else:
+								client["content_length"] = int(cl_str)
+								if int(client["content_length"]) < 0:
+									invalid_cl = true
+							break
+
+					if invalid_cl:
+						_queue_http_response(client, 400, JSON.stringify({"success": false, "error": "Invalid Content-Length"}))
+						_flush_response_chunk(client)
+						if int(client["response_sent"]) >= client["response"].size():
+							peer.disconnect_from_host()
+							clients.remove_at(i)
+						continue
+
+					if int(client["header_end_index"]) + int(client["content_length"]) > MAX_REQUEST_SIZE:
+						_queue_http_response(client, 413, JSON.stringify({"success": false, "error": "Payload too large"}))
+						_flush_response_chunk(client)
+						if int(client["response_sent"]) >= client["response"].size():
+							peer.disconnect_from_host()
+							clients.remove_at(i)
+						continue
+
+			if client["headers_parsed"]:
+				var body_received: int = client["buffer"].size() - int(client["header_end_index"])
+				if body_received >= int(client["content_length"]):
+					_process_http_request(client)
+					_flush_response_chunk(client)
+					did_work = true
+					if int(client["response_sent"]) >= client["response"].size():
+						peer.disconnect_from_host()
+						clients.remove_at(i)
+					continue
+
+			var timeout_limit := BODY_READ_TIMEOUT_MS if bool(client["headers_parsed"]) else IDLE_HEADER_TIMEOUT_MS
+			if Time.get_ticks_msec() - int(client["last_active"]) > timeout_limit:
+				peer.disconnect_from_host()
+				clients.remove_at(i)
+				continue
+
+		if not did_work:
+			OS.delay_msec(1 if clients.size() > 0 else 2)
+
+	for client in clients:
+		var peer: StreamPeerTCP = client["peer"]
+		if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 			peer.disconnect_from_host()
-			return
 
-		OS.delay_msec(1)
 
-	if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
-		peer.disconnect_from_host()
+func _flush_response_chunk(client: Dictionary) -> bool:
+	if client["state"] != "respond":
+		return false
+	var peer: StreamPeerTCP = client["peer"]
+	var response: PackedByteArray = client["response"]
+	var sent_so_far: int = int(client["response_sent"])
+	var remaining: int = response.size() - sent_so_far
+	if remaining <= 0:
+		return false
+	var chunk_len: int = mini(remaining, MAX_RESPONSE_CHUNK)
+	var chunk: PackedByteArray = response.slice(sent_so_far, sent_so_far + chunk_len)
+	var res := peer.put_partial_data(chunk)
+	if res[0] == OK and int(res[1]) > 0:
+		client["response_sent"] = sent_so_far + int(res[1])
+		client["last_active"] = Time.get_ticks_msec()
+		return true
+	return false
+
+
+func _queue_http_response(client: Dictionary, status_code: int, response_body: String) -> void:
+	var body_bytes: PackedByteArray = response_body.to_utf8_buffer()
+	var response_header := "HTTP/1.1 %d %s\r\n" % [status_code, _status_text(status_code)]
+	response_header += "Content-Type: application/json; charset=utf-8\r\n"
+	response_header += "Content-Length: %d\r\n" % body_bytes.size()
+	response_header += "Access-Control-Allow-Origin: *\r\n"
+	response_header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+	response_header += "Access-Control-Allow-Headers: Content-Type\r\n"
+	response_header += "Connection: close\r\n"
+	response_header += "\r\n"
+
+	var full_response := response_header.to_utf8_buffer()
+	full_response.append_array(body_bytes)
+
+	client["response"] = full_response
+	client["response_sent"] = 0
+	client["state"] = "respond"
+	client["last_active"] = Time.get_ticks_msec()
 
 
 func _find_header_end(buf: PackedByteArray) -> int:
@@ -121,7 +262,11 @@ func _find_header_end(buf: PackedByteArray) -> int:
 	return -1
 
 
-func _process_http_request(peer: StreamPeerTCP, buffer: PackedByteArray, header_end: int, content_length: int) -> void:
+func _process_http_request(client: Dictionary) -> void:
+	var buffer: PackedByteArray = client["buffer"]
+	var header_end: int = int(client["header_end_index"])
+	var content_length: int = int(client["content_length"])
+
 	var header_bytes := buffer.slice(0, header_end)
 	var header_str := header_bytes.get_string_from_utf8()
 	var first_line := header_str.split("\r\n")[0]
@@ -142,7 +287,7 @@ func _process_http_request(peer: StreamPeerTCP, buffer: PackedByteArray, header_
 		var health := {
 			"status": "ok",
 			"server": "pix-mcp-bridge",
-			"version": "0.2.2",
+			"version": "0.2.3",
 			"pixelorama_version": _api.general.get_pixelorama_version() if _api else "unknown",
 			"api_version": _api.get_api_version() if _api else -1
 		}
@@ -171,21 +316,9 @@ func _process_http_request(peer: StreamPeerTCP, buffer: PackedByteArray, header_
 		response_body = JSON.stringify({"error": "Not found", "path": path, "method": method})
 		status_code = 404
 
-	var body_bytes: PackedByteArray = response_body.to_utf8_buffer()
-	var response_header := "HTTP/1.1 %d %s\r\n" % [status_code, _status_text(status_code)]
-	response_header += "Content-Type: application/json; charset=utf-8\r\n"
-	response_header += "Content-Length: %d\r\n" % body_bytes.size()
-	response_header += "Access-Control-Allow-Origin: *\r\n"
-	response_header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-	response_header += "Access-Control-Allow-Headers: Content-Type\r\n"
-	response_header += "Connection: close\r\n"
-	response_header += "\r\n"
-
-	var full_response := response_header.to_utf8_buffer()
-	full_response.append_array(body_bytes)
-
-	peer.put_data(full_response)
-	peer.disconnect_from_host()
+	# Free request buffer now that response is built
+	client["buffer"] = PackedByteArray()
+	_queue_http_response(client, status_code, response_body)
 
 
 func _dispatch_command_to_main_thread(body: String) -> Dictionary:
@@ -253,6 +386,7 @@ func _status_text(code: int) -> String:
 		204: return "No Content"
 		400: return "Bad Request"
 		404: return "Not Found"
+		413: return "Content Too Large"
 		500: return "Internal Server Error"
 		504: return "Gateway Timeout"
 	return "Unknown"

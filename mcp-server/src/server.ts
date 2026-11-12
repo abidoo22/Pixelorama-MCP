@@ -22,7 +22,7 @@ import { registerGodotExportTools } from "./tools/godot_export.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "pix-mcp",
-    version: "0.2.0",
+    version: "0.2.3",
   });
 
   // Register all tool groups
