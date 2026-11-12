@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
 import { coerceInt, coerceFloat, layerHandleSchema } from "../utils/schema_helpers.js";
+import { resolveSafeDirectory, resolveSafeOutputFile, sanitizeAssetName } from "../utils/path_guard.js";
 
 export function registerFrameTools(server: McpServer): void {
   // ── FRAME QUERIES ──────────────────────────────────────────────────────
@@ -328,7 +329,16 @@ export function registerFrameTools(server: McpServer): void {
         .describe("Last frame to export (only for 'frames' mode, defaults to last frame)"),
     },
     async ({ path, prefix, mode, columns, start_frame, end_frame }) => {
-      const params: Record<string, unknown> = { path, prefix, mode };
+      let safeDir: string;
+      let safePrefix: string;
+      try {
+        safeDir = resolveSafeDirectory(path, "path");
+        safePrefix = sanitizeAssetName(prefix, "prefix");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+
+      const params: Record<string, unknown> = { path: safeDir, prefix: safePrefix, mode };
       if (columns !== undefined) params.columns = columns;
       if (start_frame !== undefined) params.start_frame = start_frame;
       if (end_frame !== undefined) params.end_frame = end_frame;
@@ -505,7 +515,13 @@ export function registerFrameTools(server: McpServer): void {
       path: z.string().describe("Absolute file path to save the .gif file (e.g. '/path/to/animation.gif')"),
     },
     async ({ path }) => {
-      const result = await sendCommand("export_gif", { path });
+      let safePath: string;
+      try {
+        safePath = resolveSafeOutputFile(path, [".gif"], "path");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+      const result = await sendCommand("export_gif", { path: safePath });
       return {
         content: [
           {
@@ -526,7 +542,13 @@ export function registerFrameTools(server: McpServer): void {
       path: z.string().describe("Absolute file path to save the .apng file (e.g. '/path/to/animation.apng')"),
     },
     async ({ path }) => {
-      const result = await sendCommand("export_apng", { path });
+      let safePath: string;
+      try {
+        safePath = resolveSafeOutputFile(path, [".apng", ".png"], "path");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+      const result = await sendCommand("export_apng", { path: safePath });
       return {
         content: [
           {
@@ -548,8 +570,19 @@ export function registerFrameTools(server: McpServer): void {
       base_name: z.string().optional().describe("Base filename prefix (defaults to project name)"),
     },
     async ({ target_dir, base_name }) => {
-      const params: Record<string, unknown> = { target_dir };
-      if (base_name !== undefined) params.base_name = base_name;
+      let safeTargetDir: string;
+      let safeBaseName: string | undefined;
+      try {
+        safeTargetDir = resolveSafeDirectory(target_dir, "target_dir");
+        if (base_name !== undefined && base_name.trim() !== "") {
+          safeBaseName = sanitizeAssetName(base_name, "base_name");
+        }
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+
+      const params: Record<string, unknown> = { target_dir: safeTargetDir };
+      if (safeBaseName !== undefined) params.base_name = safeBaseName;
       const result = await sendCommand("export_aseprite_json", params);
       return {
         content: [

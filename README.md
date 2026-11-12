@@ -240,7 +240,7 @@ The smart asset importer automatically detects solid or gradient backgrounds, ex
 └─────────────────────────────────────────────────────────┘
 ```
 
-All communication occurs locally via `127.0.0.1:7373`. No canvas data is transmitted externally outside your local machine.
+All communication occurs locally via `127.0.0.1:7373`. No canvas data is transmitted externally outside your local machine. File import/export tools automatically block sensitive system and hidden directories (`.ssh`, `.git`, `.config`, `/etc`, etc.); strict environments can optionally set `PIXELORAMA_MCP_ALLOWED_DIRS` to confine file access to specific project folders.
 
 ---
 

@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
 import { coerceInt } from "../utils/schema_helpers.js";
+import { resolveSafeInputFile, resolveSafeOutputFile } from "../utils/path_guard.js";
 
 export function registerCanvasTools(server: McpServer): void {
   server.tool(
@@ -207,7 +208,15 @@ export function registerCanvasTools(server: McpServer): void {
     },
     async ({ path }) => {
       const params: Record<string, unknown> = {};
-      if (path) params.path = path;
+      if (path) {
+        try {
+          params.path = resolveSafeOutputFile(path, [".pxo"], "path");
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }],
+          };
+        }
+      }
       const result = await sendCommand("save_project", params);
       return {
         content: [
@@ -235,7 +244,15 @@ export function registerCanvasTools(server: McpServer): void {
         .describe("Non-destructive upscale multiplier (e.g. 1 for native, 2 for 2x, 4 for 4x, 8 for 8x crisp pixel scaling)"),
     },
     async ({ path, frame, scale }) => {
-      const result = await sendCommand("export_image", { path, frame, scale });
+      let safePath: string;
+      try {
+        safePath = resolveSafeOutputFile(path, [".png"], "path");
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }],
+        };
+      }
+      const result = await sendCommand("export_image", { path: safePath, frame, scale });
       return {
         content: [
           {
@@ -335,7 +352,15 @@ export function registerCanvasTools(server: McpServer): void {
       path: z.string().describe("Absolute file path to the .pxo project file"),
     },
     async ({ path }) => {
-      const result = await sendCommand("open_project", { path });
+      let safePath: string;
+      try {
+        safePath = resolveSafeInputFile(path, [".pxo"], 200 * 1024 * 1024, "path");
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }],
+        };
+      }
+      const result = await sendCommand("open_project", { path: safePath });
       return {
         content: [
           {

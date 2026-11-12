@@ -12,6 +12,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { sendCommand } from "../bridge/pixelorama_client.js";
 import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
+import { resolveSafeDirectory, sanitizeAssetName } from "../utils/path_guard.js";
 
 export function registerGodotExportTools(server: McpServer): void {
   // ── export_godot_spriteframes ───────────────────────────────────────────
@@ -26,9 +27,20 @@ export function registerGodotExportTools(server: McpServer): void {
       loop: coerceBool().default(true).describe("Whether the animation loops"),
     },
     async ({ target_dir, sprite_name, animation_name, fps, loop }) => {
+      let safeTargetDir: string;
+      let safeSpriteName: string;
+      let safeAnimationName: string;
+      try {
+        safeTargetDir = resolveSafeDirectory(target_dir, "target_dir");
+        safeSpriteName = sanitizeAssetName(sprite_name, "sprite_name");
+        safeAnimationName = sanitizeAssetName(animation_name, "animation_name");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+
       // Ensure target directory exists
-      if (!fs.existsSync(target_dir)) {
-        fs.mkdirSync(target_dir, { recursive: true });
+      if (!fs.existsSync(safeTargetDir)) {
+        fs.mkdirSync(safeTargetDir, { recursive: true });
       }
 
       // Query frames
@@ -41,8 +53,8 @@ export function registerGodotExportTools(server: McpServer): void {
 
       // Export individual frame PNGs
       const exportRes = await sendCommand("export_animation", {
-        path: target_dir,
-        prefix: `${sprite_name}_${animation_name}`,
+        path: safeTargetDir,
+        prefix: `${safeSpriteName}_${safeAnimationName}`,
         mode: "frames",
         start_frame: 0,
         end_frame: totalFrames - 1,
@@ -53,7 +65,7 @@ export function registerGodotExportTools(server: McpServer): void {
       }
 
       const filePaths = exportRes.data.files as string[];
-      const fileNames = filePaths.map((fp) => path.basename(fp));
+      const fileNames = filePaths.map((fp) => path.basename(fp).replace(/["\\\r\n]/g, "_"));
 
       // Build Godot 4 .tres SpriteFrames content
       let extResources = "";
@@ -73,19 +85,19 @@ animations = [{
 "frames": [
 ${frameEntries}],
 "loop": ${loop},
-"name": &"${animation_name}",
+"name": &"${safeAnimationName}",
 "speed": ${fps.toFixed(1)}
 }]
 `;
 
-      const tresPath = path.join(target_dir, `${sprite_name}_${animation_name}_frames.tres`);
+      const tresPath = path.join(safeTargetDir, `${safeSpriteName}_${safeAnimationName}_frames.tres`);
       fs.writeFileSync(tresPath, tresContent, "utf-8");
 
       const text = `✅ Godot 4 SpriteFrames exported successfully!\n` +
-        `- Destination folder: ${target_dir}\n` +
+        `- Destination folder: ${safeTargetDir}\n` +
         `- Frames exported: ${fileNames.length} PNGs\n` +
         `- Godot Resource: ${tresPath}\n` +
-        `- Animation: "${animation_name}" (${fps} FPS, ${loop ? "looping" : "one-shot"})\n\n` +
+        `- Animation: "${safeAnimationName}" (${fps} FPS, ${loop ? "looping" : "one-shot"})\n\n` +
         `🎮 In Godot: Drag \`${path.basename(tresPath)}\` onto the 'Sprite Frames' property of an AnimatedSprite2D node!`;
 
       return { content: [{ type: "text" as const, text }] };
@@ -102,9 +114,18 @@ ${frameEntries}],
       tile_size: coerceInt(8, 128).default(16).describe("Tile width and height in pixels"),
     },
     async ({ target_dir, tileset_name, tile_size }) => {
+      let safeTargetDir: string;
+      let safeTilesetName: string;
+      try {
+        safeTargetDir = resolveSafeDirectory(target_dir, "target_dir");
+        safeTilesetName = sanitizeAssetName(tileset_name, "tileset_name");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+
       // Ensure target directory exists
-      if (!fs.existsSync(target_dir)) {
-        fs.mkdirSync(target_dir, { recursive: true });
+      if (!fs.existsSync(safeTargetDir)) {
+        fs.mkdirSync(safeTargetDir, { recursive: true });
       }
 
       const infoRes = await sendCommand("get_canvas_info", {});
@@ -118,8 +139,8 @@ ${frameEntries}],
       const cols = Math.floor(width / tile_size);
       const rows = Math.floor(height / tile_size);
 
-      const pngFileName = `${tileset_name}.png`;
-      const pngPath = path.join(target_dir, pngFileName);
+      const pngFileName = `${safeTilesetName}.png`;
+      const pngPath = path.join(safeTargetDir, pngFileName);
 
       const exportRes = await sendCommand("export_image", { path: pngPath, frame: 0 });
       if (!exportRes.success) {
@@ -148,11 +169,11 @@ tile_size = Vector2i(${tile_size}, ${tile_size})
 sources/0 = SubResource("TileSetAtlasSource_1")
 `;
 
-      const tresPath = path.join(target_dir, `${tileset_name}.tres`);
+      const tresPath = path.join(safeTargetDir, `${safeTilesetName}.tres`);
       fs.writeFileSync(tresPath, tresContent, "utf-8");
 
       const text = `✅ Godot 4 TileSet exported successfully!\n` +
-        `- Destination folder: ${target_dir}\n` +
+        `- Destination folder: ${safeTargetDir}\n` +
         `- Texture: ${pngPath} (${width}×${height} px)\n` +
         `- Godot Resource: ${tresPath}\n` +
         `- Tile size: ${tile_size}×${tile_size} px (${cols * rows} tiles configured)\n\n` +

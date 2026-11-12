@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as zlib from "zlib";
 import { sendCommand } from "../bridge/pixelorama_client.js";
 import { coerceInt, coerceFloat, coerceBool, safeJsonArray } from "../utils/schema_helpers.js";
+import { resolveSafeInputFile } from "../utils/path_guard.js";
 
 // Helper: Paeth Predictor for raw PNG scanline filtering
 function paethPredictor(a: number, b: number, c: number): number {
@@ -178,15 +179,18 @@ export function registerImporterTools(server: McpServer): void {
       create_new_canvas,
       canvas_name,
     }) => {
-      if (!fs.existsSync(file_path)) {
+      let safeFilePath: string;
+      try {
+        safeFilePath = resolveSafeInputFile(file_path, [".png"], undefined, "file_path");
+      } catch (err) {
         return {
-          content: [{ type: "text" as const, text: `❌ File not found at path: ${file_path}` }],
+          content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }],
         };
       }
 
       let img: DecodedPNG;
       try {
-        const fileBuffer = fs.readFileSync(file_path);
+        const fileBuffer = fs.readFileSync(safeFilePath);
         img = decodePNG(fileBuffer);
       } catch (err) {
         return {
@@ -286,8 +290,17 @@ export function registerImporterTools(server: McpServer): void {
       layer: coerceInt(0).optional().describe("Layer index to import frames onto (defaults to active layer)"),
     },
     async ({ path, frame_width, frame_height, start_frame, max_frames, layer }) => {
+      let safePath: string;
+      try {
+        safePath = resolveSafeInputFile(path, [".png", ".webp", ".jpg", ".jpeg", ".bmp"], undefined, "path");
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }],
+        };
+      }
+
       const params: Record<string, unknown> = {
-        path,
+        path: safePath,
         frame_width,
         frame_height,
         start_frame,

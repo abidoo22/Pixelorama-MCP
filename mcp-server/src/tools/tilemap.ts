@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { sendCommand } from "../bridge/pixelorama_client.js";
 import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
+import { resolveSafeOutputFile } from "../utils/path_guard.js";
 
 export function registerTilemapTools(server: McpServer): void {
   server.tool(
@@ -77,6 +78,13 @@ export function registerTilemapTools(server: McpServer): void {
       generate_metadata: coerceBool().default(true).describe("If true, generates a .json metadata file alongside the PNG"),
     },
     async ({ export_path, tile_size, generate_metadata }) => {
+      let safeExportPath: string;
+      try {
+        safeExportPath = resolveSafeOutputFile(export_path, [".png"], "export_path");
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
+      }
+
       const infoRes = await sendCommand("get_canvas_info", {});
       if (!infoRes.success || !infoRes.data) {
         return { content: [{ type: "text" as const, text: `❌ No active canvas: ${infoRes.error}` }] };
@@ -90,12 +98,12 @@ export function registerTilemapTools(server: McpServer): void {
       const totalTiles = cols * rows;
 
       // Ensure directory exists
-      const targetDir = path.dirname(export_path);
+      const targetDir = path.dirname(safeExportPath);
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
 
-      const exportRes = await sendCommand("export_image", { path: export_path, frame: 0 });
+      const exportRes = await sendCommand("export_image", { path: safeExportPath, frame: 0 });
       if (!exportRes.success) {
         return { content: [{ type: "text" as const, text: `❌ Failed to export tileset image: ${exportRes.error}` }] };
       }
@@ -104,7 +112,7 @@ export function registerTilemapTools(server: McpServer): void {
       if (generate_metadata) {
         const metadata = {
           tileset_name: d.name,
-          image: path.basename(export_path),
+          image: path.basename(safeExportPath),
           image_width: width,
           image_height: height,
           tile_size: tile_size,
@@ -126,13 +134,14 @@ export function registerTilemapTools(server: McpServer): void {
           }
         }
 
-        const jsonPath = export_path.replace(/\.[^/.]+$/, ".json");
+        const parsed = path.parse(safeExportPath);
+        const jsonPath = path.join(parsed.dir, `${parsed.name}.json`);
         fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2), "utf-8");
         metadataFile = jsonPath;
       }
 
       const text = `✅ Tileset exported successfully!\n` +
-        `- Image: ${export_path} (${width}×${height} px)\n` +
+        `- Image: ${safeExportPath} (${width}×${height} px)\n` +
         `- Tiles: ${totalTiles} tiles (${cols}×${rows} grid of ${tile_size}×${tile_size} px)` +
         (metadataFile ? `\n- Metadata: ${metadataFile}` : "");
 
