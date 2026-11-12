@@ -250,7 +250,99 @@ func _get_current_image() -> Image:
 	var cel = _get_current_cel()
 	if cel == null or cel.get_class_name() != "PixelCel":
 		return null
-	return cel.get_image().duplicate()
+	return _cel_to_canvas_image(cel, _api.project.current_project)
+
+
+func _get_cel_offset(cel) -> Vector2i:
+	# Pixelorama 1.2.4 stores PixelCel.offset separately from its compact image.
+	# Older supported APIs had canvas-sized images at origin.
+	var value = cel.get("offset")
+	if typeof(value) == TYPE_VECTOR2I:
+		return value
+	if typeof(value) == TYPE_VECTOR2:
+		return Vector2i(value)
+	return Vector2i.ZERO
+
+
+
+func _capture_cel_undo_data(cel, cel_image: Image) -> Dictionary:
+	## Mirror Project.serialize_cel_undo_data(): the cel key must carry its
+	## offset so Project.deserialize_cel_undo_data() registers change_offset
+	## do/undo methods. PixelCel has no serialize_undo_data() in API 10, so
+	## without this entry undo/redo would restore image data but leave the
+	## offset at its post-edit value, shifting pixels on canvas.
+	var data := {}
+	if cel.has_method("serialize_undo_data"):
+		var serialized = cel.serialize_undo_data()
+		if serialized is Dictionary:
+			data[cel] = serialized
+	if not data.has(cel):
+		data[cel] = {}
+	data[cel]["offset"] = _get_cel_offset(cel)
+	if cel_image:
+		cel_image.add_data_to_dictionary(data)
+	return data
+
+func _cel_to_canvas_image(cel, project) -> Image:
+	## Return a canvas-sized working copy while leaving the compact source cel intact.
+	## Pixels outside the canvas are intentionally omitted from this view; commit
+	## merges only the canvas rectangle back into the source cel, preserving them.
+	var width := int(project.size.x)
+	var height := int(project.size.y)
+	var canvas_image := Image.create(width, height, false, Image.FORMAT_RGBA8)
+	var source: Image = cel.get_image()
+	if source == null or source.is_empty():
+		return canvas_image
+	var offset := _get_cel_offset(cel)
+	var overlap := Rect2i(offset, source.get_size()).intersection(Rect2i(Vector2i.ZERO, Vector2i(width, height)))
+	if overlap.has_area():
+		var source_rect := Rect2i(overlap.position - offset, overlap.size)
+		canvas_image.blit_rect(source, source_rect, overlap.position)
+	return canvas_image
+
+
+func _commit_compact_cel_content(image: Image, offset: Vector2i, action_name: String, frame_idx: int, layer_idx: int) -> void:
+	## Replace a cel's compact image and offset as one undoable change.
+	var project = _api.project.current_project
+	if project == null or frame_idx < 0 or frame_idx >= project.frames.size():
+		return
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return
+	var cel = project.frames[frame_idx].cels[layer_idx]
+	if cel == null or cel.get_class_name() != "PixelCel":
+		return
+	if not cel.has_method("change_offset"):
+		_api.project.set_pixelcel_image(image, frame_idx, layer_idx)
+		return
+
+	var cel_image = cel.get_image()
+	var ur = project.undo_redo
+	var undo_data := {}
+	if ur:
+		ur.create_action(action_name)
+		undo_data = _capture_cel_undo_data(cel, cel_image)
+
+	cel_image.copy_from_custom(image, cel_image.is_indexed)
+	cel.change_offset(offset)
+	if cel.has_method("update_texture"):
+		cel.update_texture()
+
+	if ur:
+		var redo_data := _capture_cel_undo_data(cel, cel_image)
+		project.deserialize_cel_undo_data(redo_data, undo_data)
+		ur.add_do_property(project, "selected_cels", [])
+		ur.add_do_method(project.change_cel.bind(frame_idx, layer_idx))
+		ur.add_undo_property(project, "selected_cels", [])
+		ur.add_undo_method(project.change_cel.bind(frame_idx, layer_idx))
+		var global_node = _api.get_node_or_null("/root/Global")
+		if global_node and global_node.has_method("undo_or_redo"):
+			ur.add_do_method(global_node.undo_or_redo.bind(false, frame_idx, layer_idx, project))
+			ur.add_undo_method(global_node.undo_or_redo.bind(true, frame_idx, layer_idx, project))
+		if cel.has_method("update_texture"):
+			ur.add_do_method(cel.update_texture)
+			ur.add_undo_method(cel.update_texture)
+		ur.commit_action()
+	_api.project.select_cels([[frame_idx, layer_idx]])
 
 
 func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
@@ -270,7 +362,7 @@ func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
 	if cel == null or cel.get_class_name() != "PixelCel":
 		return {"error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [frame_idx, layer_idx], "image": null, "frame": frame_idx, "layer": layer_idx}
 
-	return {"error": "", "image": cel.get_image().duplicate(), "frame": frame_idx, "layer": layer_idx, "cel": cel}
+	return {"error": "", "image": _cel_to_canvas_image(cel, project), "frame": frame_idx, "layer": layer_idx, "cel": cel}
 
 
 func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1, record_undo: bool = true) -> void:
@@ -294,28 +386,37 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 	if cel == null or cel.get_class_name() != "PixelCel":
 		return
 
-	var cel_image: Image = cel.get_image()
 	image.convert(project.get_image_format())
+	var cel_image: Image = cel.get_image()
 
 	var ur = project.undo_redo if record_undo else null
 	if ur:
 		ur.create_action(action_name)
-		var undo_data := {}
-		if cel.has_method("serialize_undo_data"):
-			undo_data[cel] = cel.serialize_undo_data()
-		cel_image.add_data_to_dictionary(undo_data)
+		var undo_data := _capture_cel_undo_data(cel, cel_image)
 
-		cel_image.fill(0)
-		cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+		if cel.has_method("ensure_canvas_rect_in_bounds"):
+			cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
+			cel_image = cel.get_image()
+			cel_image.blit_rect(
+				image,
+				Rect2i(Vector2i.ZERO, project.size),
+				-_get_cel_offset(cel)
+			)
+			if cel.has_method("shrink_to_content"):
+				cel.shrink_to_content()
+			cel_image = cel.get_image()
+		else:
+			# Compatibility with older Extensions API versions whose cel images
+			# always matched the canvas dimensions and had no independent offset.
+			cel_image.fill(0)
+			cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
 		if cel_image.has_method("convert_rgb_to_indexed"):
 			cel_image.convert_rgb_to_indexed()
 
 		var redo_data := {}
 		if cel.has_method("update_tilemap"):
 			cel.update_tilemap()
-		if cel.has_method("serialize_undo_data"):
-			redo_data[cel] = cel.serialize_undo_data()
-		cel_image.add_data_to_dictionary(redo_data)
+		redo_data = _capture_cel_undo_data(cel, cel_image)
 
 		project.deserialize_cel_undo_data(redo_data, undo_data)
 		ur.add_do_property(project, "selected_cels", [])
@@ -334,8 +435,20 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 		ur.commit_action()
 	else:
 		# Fallback if undo_redo not available or record_undo is false
-		cel_image.fill(0)
-		cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
+		if cel.has_method("ensure_canvas_rect_in_bounds"):
+			cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
+			cel_image = cel.get_image()
+			cel_image.blit_rect(
+				image,
+				Rect2i(Vector2i.ZERO, project.size),
+				-_get_cel_offset(cel)
+			)
+			if cel.has_method("shrink_to_content"):
+				cel.shrink_to_content()
+			cel_image = cel.get_image()
+		else:
+			cel_image.fill(0)
+			cel_image.blit_rect(image, Rect2i(Vector2i.ZERO, image.get_size()), Vector2i.ZERO)
 		if cel_image.has_method("convert_rgb_to_indexed"):
 			cel_image.convert_rgb_to_indexed()
 		if cel.has_method("update_tilemap"):
@@ -413,6 +526,8 @@ func _cmd_create_canvas(params: Dictionary) -> Dictionary:
 		if fill_color.a > 0.0 and project.frames.size() > 0 and project.frames[0].cels.size() > 0:
 			var cel = project.frames[0].cels[0]
 			if cel != null and cel.has_method("get_image"):
+				if cel.has_method("ensure_canvas_rect_in_bounds"):
+					cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, Vector2i(width, height))
 				var c_img: Image = cel.get_image()
 				if c_img:
 					c_img.fill(fill_color)
@@ -952,7 +1067,8 @@ func _cmd_crop_to_content(_params: Dictionary) -> Dictionary:
 	for cel in project.get_all_pixel_cels():
 		if cel.get_class_name() == "PixelCel":
 			var cel_used: Rect2i = cel.get_image().get_used_rect()
-			if cel_used != Rect2i(0, 0, 0, 0):
+			if cel_used.has_area():
+				cel_used.position += _get_cel_offset(cel)
 				if used_rect == Rect2i(0, 0, 0, 0):
 					used_rect = cel_used
 				else:
@@ -1009,11 +1125,22 @@ func _cmd_scale_canvas(params: Dictionary) -> Dictionary:
 	else:
 		return {"success": false, "error": "Provide either 'factor' (> 0) or 'width' and 'height'"}
 
+	var scale_x := float(new_w) / float(old_w)
+	var scale_y := float(new_h) / float(old_h)
 	for f in project.frames:
 		for cel in f.cels:
 			if cel.get_class_name() == "PixelCel":
 				var img: Image = cel.get_image()
-				img.resize(new_w, new_h, interpolation)
+				var scaled_size := Vector2i(
+					maxi(1, roundi(float(img.get_width()) * scale_x)),
+					maxi(1, roundi(float(img.get_height()) * scale_y))
+				)
+				img.resize(scaled_size.x, scaled_size.y, interpolation)
+				var offset := _get_cel_offset(cel)
+				if cel.has_method("change_offset"):
+					cel.change_offset(Vector2i(roundi(offset.x * scale_x), roundi(offset.y * scale_y)))
+				if cel.has_method("update_texture"):
+					cel.update_texture()
 
 	project.size = Vector2i(new_w, new_h)
 	var canvas = _api.general.get_canvas()
@@ -1846,6 +1973,24 @@ func _cmd_transform_cel(params: Dictionary) -> Dictionary:
 	var dx: int = int(params.get("dx", 0))
 	var dy: int = int(params.get("dy", 0))
 	var wrap_around: bool = bool(params.get("wrap_around", false))
+	var cel = target.cel
+	if not wrap_around and cel.has_method("copy_content") and cel.has_method("change_offset"):
+		var content = cel.copy_content()
+		var shifted_count := 0
+		var compact_image: Image = content[0]
+		var used := compact_image.get_used_rect()
+		for py in range(used.position.y, used.end.y):
+			for px in range(used.position.x, used.end.x):
+				if compact_image.get_pixel(px, py).a > 0.001:
+					shifted_count += 1
+		_commit_compact_cel_content(
+			content[0],
+			content[1] + Vector2i(dx, dy),
+			"Transform Cel (%d, %d)" % [dx, dy],
+			target.frame,
+			target.layer
+		)
+		return {"success": true, "data": {"dx": dx, "dy": dy, "wrap_around": false, "shifted_pixels": shifted_count, "frame": target.frame, "layer": target.layer}}
 
 	var w := image.get_width()
 	var h := image.get_height()
@@ -2691,7 +2836,13 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 				if src_image.get_pixel(x, y).a > 0.001:
 					pixels_copied += 1
 
-	_commit_image_change(copy_img, "Copy Cel", dst_frame, dst_layer)
+	# Copy the source offset as well as its compact image. Falling back to the
+	# canvas-space helper keeps compatibility with older APIs without offsets.
+	if src_cel.has_method("copy_content") and dst_cel.has_method("change_offset"):
+		var source_content = src_cel.copy_content()
+		_commit_compact_cel_content(source_content[0], source_content[1], "Copy Cel", dst_frame, dst_layer)
+	else:
+		_commit_image_change(copy_img, "Copy Cel", dst_frame, dst_layer)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -3779,9 +3930,20 @@ func _cmd_tween_cel(params: Dictionary) -> Dictionary:
 		var cur_dx := int(round(float(dx) * t))
 		var cur_dy := int(round(float(dy) * t))
 
-		var tween_img = Image.create_empty(base_img.get_width(), base_img.get_height(), false, Image.FORMAT_RGBA8)
-		tween_img.blit_rect(base_img, Rect2i(Vector2i.ZERO, base_img.get_size()), Vector2i(cur_dx, cur_dy))
-		_api.project.set_pixelcel_image(tween_img, target_f, layer_idx)
+		var dst_cel = project.frames[target_f].cels[layer_idx]
+		if src_cel.has_method("copy_content") and dst_cel.has_method("change_offset"):
+			var source_content = src_cel.copy_content()
+			_commit_compact_cel_content(
+				source_content[0],
+				source_content[1] + Vector2i(cur_dx, cur_dy),
+				"Tween Cel",
+				target_f,
+				layer_idx
+			)
+		else:
+			var tween_img = Image.create_empty(base_img.get_width(), base_img.get_height(), false, Image.FORMAT_RGBA8)
+			tween_img.blit_rect(base_img, Rect2i(Vector2i.ZERO, base_img.get_size()), Vector2i(cur_dx, cur_dy))
+			_api.project.set_pixelcel_image(tween_img, target_f, layer_idx)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -3936,10 +4098,14 @@ func _cmd_duplicate_layer(params: Dictionary) -> Dictionary:
 	for f in range(project.frames.size()):
 		var src_cel = project.frames[f].cels[src_idx]
 		if src_cel.get_class_name() == "PixelCel":
-			var src_img = src_cel.get_image()
-			var clone_img = Image.create_empty(src_img.get_width(), src_img.get_height(), false, Image.FORMAT_RGBA8)
-			clone_img.copy_from(src_img)
-			_api.project.set_pixelcel_image(clone_img, f, new_layer_idx)
+			if src_cel.has_method("copy_content"):
+				var source_content = src_cel.copy_content()
+				_commit_compact_cel_content(source_content[0], source_content[1], "Duplicate Layer Cel", f, new_layer_idx)
+			else:
+				var src_img = src_cel.get_image()
+				var clone_img = Image.create_empty(src_img.get_width(), src_img.get_height(), false, Image.FORMAT_RGBA8)
+				clone_img.copy_from(src_img)
+				_api.project.set_pixelcel_image(clone_img, f, new_layer_idx)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -3988,12 +4154,21 @@ func _cmd_merge_layers(params: Dictionary) -> Dictionary:
 		var src_cel = project.frames[f].cels[src_idx]
 		var dst_cel = project.frames[f].cels[dst_idx]
 		if src_cel.get_class_name() == "PixelCel" and dst_cel.get_class_name() == "PixelCel":
-			var src_img = src_cel.get_image()
-			var dst_img = dst_cel.get_image()
-			var blended = Image.create_empty(dst_img.get_width(), dst_img.get_height(), false, Image.FORMAT_RGBA8)
-			blended.copy_from(dst_img)
-			blended.blend_rect(src_img, Rect2i(Vector2i.ZERO, src_img.get_size()), Vector2i.ZERO)
-			_api.project.set_pixelcel_image(blended, f, dst_idx)
+			var src_img: Image = src_cel.get_image()
+			var dst_img: Image = dst_cel.get_image()
+			if src_cel.has_method("copy_content") and dst_cel.has_method("change_offset"):
+				var src_rect := Rect2i(_get_cel_offset(src_cel), src_img.get_size())
+				var dst_rect := Rect2i(_get_cel_offset(dst_cel), dst_img.get_size())
+				var merged_rect := src_rect.merge(dst_rect)
+				var blended := Image.create_empty(merged_rect.size.x, merged_rect.size.y, false, Image.FORMAT_RGBA8)
+				blended.blend_rect(dst_img, Rect2i(Vector2i.ZERO, dst_img.get_size()), dst_rect.position - merged_rect.position)
+				blended.blend_rect(src_img, Rect2i(Vector2i.ZERO, src_img.get_size()), src_rect.position - merged_rect.position)
+				_commit_compact_cel_content(blended, merged_rect.position, "Merge Layer Cels", f, dst_idx)
+			else:
+				var blended = Image.create_empty(dst_img.get_width(), dst_img.get_height(), false, Image.FORMAT_RGBA8)
+				blended.copy_from(dst_img)
+				blended.blend_rect(src_img, Rect2i(Vector2i.ZERO, src_img.get_size()), Vector2i.ZERO)
+				_api.project.set_pixelcel_image(blended, f, dst_idx)
 
 	var target_layer = project.layers[dst_idx]
 	var target_layer_id := _get_or_create_layer_id(target_layer)
@@ -4864,7 +5039,7 @@ func _composite_frame_layers(project, frame_idx: int) -> Image:
 		if cel == null or not cel.has_method("get_image"):
 			continue
 
-		var cel_img: Image = cel.get_image()
+		var cel_img: Image = _cel_to_canvas_image(cel, project)
 		if cel_img == null or cel_img.is_empty():
 			continue
 
@@ -5221,9 +5396,9 @@ class ApiContext extends RefCounted:
 		var cel = _project.frames[f_idx].cels[l_idx]
 		if cel == null or cel.get_class_name() != "PixelCel":
 			return Color.TRANSPARENT
-		var img: Image = cel.get_image()
-		if img == null or x < 0 or x >= img.get_width() or y < 0 or y >= img.get_height():
+		if x < 0 or x >= int(_project.size.x) or y < 0 or y >= int(_project.size.y):
 			return Color.TRANSPARENT
+		var img: Image = _handler._cel_to_canvas_image(cel, _project)
 		return img.get_pixel(x, y)
 
 	func get_layer_image(layer = -1, frame: int = -1, fallback_empty: bool = true) -> Image:
@@ -5242,7 +5417,7 @@ class ApiContext extends RefCounted:
 		var img: Image = cel.get_image()
 		if img == null:
 			return Image.create(w, h, false, Image.FORMAT_RGBA8) if fallback_empty else null
-		return img.duplicate()
+		return _handler._cel_to_canvas_image(cel, _project)
 
 	func has_layer(layer) -> bool:
 		if _project == null:
@@ -5574,6 +5749,40 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 
 	var api_ctx = ApiContext.new(_api, project, self)
 
+	# Scripts may access cel.get_image() directly and write in canvas
+	# coordinates. Pixelorama 1.2.4 cels start compact (often 1x1), so grow
+	# the cel image to cover the canvas first; the commit below shrinks it
+	# back to its used rect, preserving any out-of-canvas pixels.
+	# Only expand when the script actually touches cel images; scripts that
+	# merely read cel.offset must observe the compact geometry. Expand every
+	# cel of the target frame, since scripts may address any cel directly
+	# (e.g. project.frames[0].cels[0]) rather than the current one.
+	var cel_before_expand = target.get("cel", null) if full_source.contains("get_image") else null
+	var saved_cel_content = null
+	if cel_before_expand != null and cel_before_expand.has_method("copy_content"):
+		saved_cel_content = cel_before_expand.copy_content()
+	if cel_before_expand != null and project != null and frame_idx >= 0 and frame_idx < project.frames.size():
+		for frame_cel in project.frames[frame_idx].cels:
+			if frame_cel != null and frame_cel.has_method("ensure_canvas_rect_in_bounds"):
+				frame_cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
+
+	# Snapshot the cel and the working image so direct cel edits made by the
+	# script (offset changes, set_pixel on cel.get_image(), resizes) are not
+	# clobbered by committing the stale pre-run working image below.
+	var cel_before = target.get("cel", null)
+	var offset_before := Vector2i.ZERO
+	var cel_size_before := Vector2i.ZERO
+	var cel_data_before := PackedByteArray()
+	if cel_before != null and cel_before.has_method("get_image"):
+		offset_before = _get_cel_offset(cel_before)
+		var cel_img_before: Image = cel_before.get_image()
+		if cel_img_before != null and not cel_img_before.is_empty():
+			cel_size_before = cel_img_before.get_size()
+			cel_data_before = cel_img_before.get_data()
+	var image_data_before := PackedByteArray()
+	if image != null and not image.is_empty():
+		image_data_before = image.get_data()
+
 	var call_args: Array = []
 	var m_args: Array = method_info.get("args", [])
 	for arg in m_args:
@@ -5625,11 +5834,6 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 			var new_w: int = int(result.get_width())
 			var new_h: int = int(result.get_height())
 			resized_canvas = true
-			for f in project.frames:
-				for cel in f.cels:
-					if cel.get_class_name() == "PixelCel":
-						var cimg: Image = cel.get_image()
-						cimg.resize(new_w, new_h, Image.INTERPOLATE_NEAREST)
 			project.size = Vector2i(new_w, new_h)
 			var canvas_node = _api.general.get_canvas()
 			if canvas_node:
@@ -5648,11 +5852,6 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 				h = ph
 				if Vector2i(w, h) != project.size:
 					resized_canvas = true
-					for f in project.frames:
-						for cel in f.cels:
-							if cel.get_class_name() == "PixelCel":
-								var cimg: Image = cel.get_image()
-								cimg.resize(w, h, Image.INTERPOLATE_NEAREST)
 					project.size = Vector2i(w, h)
 					var canvas_node = _api.general.get_canvas()
 					if canvas_node:
@@ -5675,7 +5874,38 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 				"source": full_source
 			}
 
-	if image != null:
+	# Only commit (and therefore only create an undo action) when the script
+	# actually changed something. Read-only scripts used to push a no-op
+	# "Eval GDScript" action onto the undo stack, which displaced the real
+	# previous action and cleared the redo stack on the next undo.
+	var should_commit := result is Image or result is PackedByteArray
+	if not should_commit and image != null and not image.is_empty():
+		if image_data_before.is_empty() or image.get_data() != image_data_before:
+			should_commit = true
+	if not should_commit and not (result is Image) and not (result is PackedByteArray) and cel_before != null and project != null:
+		if frame_idx >= 0 and frame_idx < project.frames.size() and layer_idx >= 0 and layer_idx < project.layers.size():
+			var cel_now = project.frames[frame_idx].cels[layer_idx]
+			if cel_now != null and cel_now.has_method("get_image"):
+				var cel_img_now: Image = cel_now.get_image()
+				var cel_changed := _get_cel_offset(cel_now) != offset_before
+				if cel_img_now == null or cel_img_now.is_empty():
+					cel_changed = cel_changed or cel_size_before != Vector2i.ZERO
+				else:
+					cel_changed = cel_changed or cel_img_now.get_size() != cel_size_before or cel_img_now.get_data() != cel_data_before
+				var image_unchanged := image != null and not image.is_empty() and image.get_data() == image_data_before
+				if cel_changed and image_unchanged:
+					image = _cel_to_canvas_image(cel_now, project)
+				if cel_changed:
+					should_commit = true
+
+	# A read-only script must leave the cel exactly as it found it: undo the
+	# temporary canvas expansion above when nothing is being committed.
+	if not should_commit and saved_cel_content != null and cel_before != null and cel_before.has_method("set_content"):
+		cel_before.set_content(saved_cel_content)
+		if cel_before.has_method("update_texture"):
+			cel_before.update_texture()
+
+	if should_commit and image != null:
 		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx, record_undo)
 		OS.delay_msec(1)
 

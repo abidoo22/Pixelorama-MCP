@@ -20,14 +20,16 @@ The plugin source code is located in `pixelorama-plugin/` and consists of the fo
 
 Pixelorama extensions must be bundled as compressed Godot PCK or ZIP packages to load correctly.
 
-To pack the source files into a compiled `PixMcpBridge.pck`:
-1. Ensure you have **Godot v4.6** (or the exact Pixelorama editor binary) available.
-2. Run the provided packing utility script:
+To pack the source files into a development PCK without touching an installed extension:
+1. Ensure you have **Godot 4.x** (preferably the version used by your Pixelorama build) available.
+2. From the repository root, run the packing utility script:
    ```bash
-   Godot_v4.6 --headless -s pack.gd
+   PIX_MCP_GODOT_BIN="/Applications/Godot.app/Contents/MacOS/Godot"
+   PIX_MCP_PCK_OUTPUT="$PWD/pixelorama-plugin/PixMcpBridge-dev.pck" \
+     "$PIX_MCP_GODOT_BIN" --headless --path "$PWD" -s pack.gd
    ```
 
-This runs `pack.gd` in a headless terminal, packaging `extension.json`, `Main.tscn`, `Main.gd`, and `command_handler.gd` with relative paths (`src/Extensions/PixMcpBridge/`) into `PixMcpBridge.pck`.
+`PIX_MCP_PCK_OUTPUT` sets the output filename; if omitted, the script writes `PixMcpBridge-dev.pck` in the current directory. The packer includes `extension.json`, `Main.tscn`, `Main.gd`, `command_handler.gd`, and available GIF exporter support files under `src/Extensions/PixMcpBridge/`. It only creates the requested output package; it does not install or copy it.
 
 ---
 
@@ -44,6 +46,14 @@ Standard system installations read extensions from the user share directory:
 * **Linux:** `~/.local/share/pixelorama/extensions/PixMcpBridge.pck`
 * **macOS:** `~/Library/Application Support/Pixelorama/extensions/PixMcpBridge.pck`
 * **Windows:** `%APPDATA%\Pixelorama\extensions\PixMcpBridge.pck`
+
+### macOS installation and verification
+
+1. Keep the generated development package outside the installed extensions folder while reviewing it.
+2. Before installing an update, quit Pixelorama and make a separate backup copy of the currently installed `PixMcpBridge.pck`; do not overwrite it until the new package has passed review.
+3. In Pixelorama, open **Edit → Preferences → Extensions → Add Extension** and select the reviewed PCK. If installing by file copy instead, place it in `~/Library/Application Support/Pixelorama/extensions/` only after preserving the existing file under a different backup name.
+4. Restart Pixelorama, enable **pix-MCP Bridge** under **Edit → Preferences → Extensions**, and check the extension log for `ExtensionsApi version: 10` and `HTTP server listening on 127.0.0.1:7373`.
+5. Use an isolated test project or a separate Pixelorama instance to run `test_cel_canvas_compat.mjs`; verify drawing, offsets, out-of-canvas content, transparency, and undo/redo before replacing a production install.
 
 ---
 

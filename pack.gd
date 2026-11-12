@@ -2,7 +2,10 @@ extends SceneTree
 
 func _init():
 	var packer = PCKPacker.new()
-	var err = packer.pck_start("PixMcpBridge.pck")
+	var output_path := OS.get_environment("PIX_MCP_PCK_OUTPUT")
+	if output_path.is_empty():
+		output_path = "PixMcpBridge-dev.pck"
+	var err = packer.pck_start(output_path)
 	if err != OK:
 		print("Error starting PCK: %s" % err)
 		quit(1)
@@ -37,28 +40,6 @@ func _init():
 		quit(1)
 		return
 
-	print("Successfully packed PixMcpBridge.pck")
-
-	# Copy to extension directories
-	var copy_paths = [
-		"pixelorama-plugin/PixMcpBridge.pck",
-		"/home/abido/.local/share/pixelorama/extensions/PixMcpBridge.pck",
-		"/home/abido/.local/share/pixelorama/Extensions/PixMcpBridge.pck",
-		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/Extensions/PixMcpBridge.pck",
-		"/home/abido/Downloads/Pixelorama-Linux-64bit/pixelorama_data/extensions/PixMcpBridge.pck"
-	]
-	var src = FileAccess.open("PixMcpBridge.pck", FileAccess.READ)
-	if src:
-		var bytes = src.get_buffer(src.get_length())
-		src.close()
-		for path in copy_paths:
-			var dir = path.get_base_dir()
-			if not DirAccess.dir_exists_absolute(dir):
-				DirAccess.make_dir_recursive_absolute(dir)
-			var dst = FileAccess.open(path, FileAccess.WRITE)
-			if dst:
-				dst.store_buffer(bytes)
-				dst.close()
-				print("Copied to %s" % path)
+	print("Successfully packed %s (not installed or copied)" % output_path)
 
 	quit(0)
