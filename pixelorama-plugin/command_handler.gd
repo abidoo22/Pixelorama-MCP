@@ -283,6 +283,55 @@ func _capture_cel_undo_data(cel, cel_image: Image) -> Dictionary:
 		cel_image.add_data_to_dictionary(data)
 	return data
 
+
+func _snapshot_cel_state(cel) -> Dictionary:
+	## Capture a cel's compact image data and offset without replacing its ImageExtended instance.
+	if cel == null or not cel.has_method("get_image"):
+		return {}
+	var src: Image = cel.get_image()
+	var img_copy: Image = src.duplicate() if src != null else null
+	return {
+		"cel": cel,
+		"image": img_copy,
+		"offset": _get_cel_offset(cel),
+	}
+
+
+func _restore_cel_state_in_place(state: Dictionary) -> void:
+	## Restore a cel's image data and offset in-place so ImageExtended object identity
+	## stays intact for Pixelorama's dictionary-keyed undo/redo compression.
+	if state.is_empty():
+		return
+	var cel = state.get("cel", null)
+	var saved_img: Image = state.get("image", null)
+	if cel == null or saved_img == null or not cel.has_method("get_image"):
+		return
+	var cel_image = cel.get_image()
+	if cel_image == null:
+		return
+	if cel_image.has_method("copy_from_custom"):
+		cel_image.copy_from_custom(saved_img, cel_image.is_indexed)
+	else:
+		cel_image.copy_from(saved_img)
+	if cel.has_method("change_offset"):
+		cel.change_offset(state.get("offset", Vector2i.ZERO))
+	if cel.has_method("update_texture"):
+		cel.update_texture()
+
+
+func _cel_matches_snapshot(cel, state: Dictionary) -> bool:
+	if cel == null or state.is_empty() or not cel.has_method("get_image"):
+		return false
+	if _get_cel_offset(cel) != state.get("offset", Vector2i.ZERO):
+		return false
+	var cur_img: Image = cel.get_image()
+	var snap_img: Image = state.get("image", null)
+	if cur_img == null or snap_img == null:
+		return cur_img == snap_img
+	if cur_img.is_empty() or snap_img.is_empty():
+		return cur_img.is_empty() == snap_img.is_empty()
+	return cur_img.get_size() == snap_img.get_size() and cur_img.get_data() == snap_img.get_data()
+
 func _cel_to_canvas_image(cel, project) -> Image:
 	## Return a canvas-sized working copy while leaving the compact source cel intact.
 	## Pixels outside the canvas are intentionally omitted from this view; commit
@@ -365,7 +414,7 @@ func _get_target_cel_and_image(params: Dictionary) -> Dictionary:
 	return {"error": "", "image": _cel_to_canvas_image(cel, project), "frame": frame_idx, "layer": layer_idx, "cel": cel}
 
 
-func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1, record_undo: bool = true) -> void:
+func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1, layer_idx: int = -1, record_undo: bool = true, pre_undo_state: Dictionary = {}) -> void:
 	## Commits the modified image through Pixelorama's undo system.
 	## This ensures every AI action is undoable by the user.
 	var project = _api.project.current_project
@@ -392,7 +441,15 @@ func _commit_image_change(image: Image, action_name: String, frame_idx: int = -1
 	var ur = project.undo_redo if record_undo else null
 	if ur:
 		ur.create_action(action_name)
+		var post_state := {}
+		if not pre_undo_state.is_empty():
+			post_state = _snapshot_cel_state(cel)
+			_restore_cel_state_in_place(pre_undo_state)
+			cel_image = cel.get_image()
 		var undo_data := _capture_cel_undo_data(cel, cel_image)
+		if not post_state.is_empty():
+			_restore_cel_state_in_place(post_state)
+			cel_image = cel.get_image()
 
 		if cel.has_method("ensure_canvas_rect_in_bounds"):
 			cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
@@ -4098,7 +4155,7 @@ func _cmd_duplicate_layer(params: Dictionary) -> Dictionary:
 	for f in range(project.frames.size()):
 		var src_cel = project.frames[f].cels[src_idx]
 		if src_cel.get_class_name() == "PixelCel":
-			if src_cel.has_method("copy_content"):
+			if src_cel.has_method("copy_content") and src_cel.has_method("change_offset"):
 				var source_content = src_cel.copy_content()
 				_commit_compact_cel_content(source_content[0], source_content[1], "Duplicate Layer Cel", f, new_layer_idx)
 			else:
@@ -5753,23 +5810,26 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	# coordinates. Pixelorama 1.2.4 cels start compact (often 1x1), so grow
 	# the cel image to cover the canvas first; the commit below shrinks it
 	# back to its used rect, preserving any out-of-canvas pixels.
-	# Only expand when the script actually touches cel images; scripts that
-	# merely read cel.offset must observe the compact geometry. Expand every
-	# cel of the target frame, since scripts may address any cel directly
-	# (e.g. project.frames[0].cels[0]) rather than the current one.
-	var cel_before_expand = target.get("cel", null) if full_source.contains("get_image") else null
-	var saved_cel_content = null
-	if cel_before_expand != null and cel_before_expand.has_method("copy_content"):
-		saved_cel_content = cel_before_expand.copy_content()
-	if cel_before_expand != null and project != null and frame_idx >= 0 and frame_idx < project.frames.size():
+	# Snapshot the target cel BEFORE any expansion or script execution so both
+	# read-only restoration and Undo ("Ctrl+Z") restore the true pre-eval cel.
+	var cel_before = target.get("cel", null)
+	var pre_eval_target_state := _snapshot_cel_state(cel_before)
+	var expanded_frame_cels: Array = []
+	if full_source.contains("get_image") and project != null and frame_idx >= 0 and frame_idx < project.frames.size():
 		for frame_cel in project.frames[frame_idx].cels:
 			if frame_cel != null and frame_cel.has_method("ensure_canvas_rect_in_bounds"):
+				var pre_state := _snapshot_cel_state(frame_cel)
 				frame_cel.ensure_canvas_rect_in_bounds(Vector2i.ZERO, project.size)
+				var post_expand_state := _snapshot_cel_state(frame_cel)
+				expanded_frame_cels.append({
+					"cel": frame_cel,
+					"pre_state": pre_state,
+					"expanded_state": post_expand_state,
+				})
 
-	# Snapshot the cel and the working image so direct cel edits made by the
-	# script (offset changes, set_pixel on cel.get_image(), resizes) are not
-	# clobbered by committing the stale pre-run working image below.
-	var cel_before = target.get("cel", null)
+	# Snapshot the cel (post-expansion) and the working image so direct cel edits
+	# made by the script (offset changes, set_pixel on cel.get_image(), resizes)
+	# are detected and not clobbered by committing the stale working image below.
 	var offset_before := Vector2i.ZERO
 	var cel_size_before := Vector2i.ZERO
 	var cel_data_before := PackedByteArray()
@@ -5816,6 +5876,9 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	var log_tail_run := _extract_godot_log_tail(log_pos_before_run)
 	var runtime_err := _extract_runtime_error_from_log(log_tail_run, full_source)
 	if runtime_err != "":
+		for entry in expanded_frame_cels:
+			_restore_cel_state_in_place(entry["pre_state"])
+		_restore_cel_state_in_place(pre_eval_target_state)
 		return {
 			"success": false,
 			"error": "GDScript runtime error: %s" % runtime_err,
@@ -5868,11 +5931,32 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 				img_from_bytes.convert(Image.FORMAT_RGBA8)
 				image = img_from_bytes
 		else:
+			for entry in expanded_frame_cels:
+				_restore_cel_state_in_place(entry["pre_state"])
+			_restore_cel_state_in_place(pre_eval_target_state)
 			return {
 				"success": false,
 				"error": "PackedByteArray size %d does not match canvas dimensions %dx%d (expected %d bytes for RGBA8 or %d for RGB8). Note: Canvas size is %dx%d; use 'create_canvas' to match your intended buffer dimensions." % [result.size(), w, h, w * h * 4, w * h * 3, int(project.size.x), int(project.size.y)],
 				"source": full_source
 			}
+
+	# Restore any non-target cels on the frame that were only expanded as a
+	# precaution and not actually modified by the script; shrink & refresh any
+	# non-target cels the script intentionally modified directly.
+	var cel_now = null
+	if project != null and frame_idx >= 0 and frame_idx < project.frames.size() and layer_idx >= 0 and layer_idx < project.layers.size():
+		cel_now = project.frames[frame_idx].cels[layer_idx]
+	for entry in expanded_frame_cels:
+		var fcel = entry["cel"]
+		if fcel == cel_now:
+			continue
+		if _cel_matches_snapshot(fcel, entry["expanded_state"]):
+			_restore_cel_state_in_place(entry["pre_state"])
+		else:
+			if fcel.has_method("shrink_to_content"):
+				fcel.shrink_to_content()
+			if fcel.has_method("update_texture"):
+				fcel.update_texture()
 
 	# Only commit (and therefore only create an undo action) when the script
 	# actually changed something. Read-only scripts used to push a no-op
@@ -5882,31 +5966,25 @@ func _cmd_eval_gdscript(params: Dictionary) -> Dictionary:
 	if not should_commit and image != null and not image.is_empty():
 		if image_data_before.is_empty() or image.get_data() != image_data_before:
 			should_commit = true
-	if not should_commit and not (result is Image) and not (result is PackedByteArray) and cel_before != null and project != null:
-		if frame_idx >= 0 and frame_idx < project.frames.size() and layer_idx >= 0 and layer_idx < project.layers.size():
-			var cel_now = project.frames[frame_idx].cels[layer_idx]
-			if cel_now != null and cel_now.has_method("get_image"):
-				var cel_img_now: Image = cel_now.get_image()
-				var cel_changed := _get_cel_offset(cel_now) != offset_before
-				if cel_img_now == null or cel_img_now.is_empty():
-					cel_changed = cel_changed or cel_size_before != Vector2i.ZERO
-				else:
-					cel_changed = cel_changed or cel_img_now.get_size() != cel_size_before or cel_img_now.get_data() != cel_data_before
-				var image_unchanged := image != null and not image.is_empty() and image.get_data() == image_data_before
-				if cel_changed and image_unchanged:
-					image = _cel_to_canvas_image(cel_now, project)
-				if cel_changed:
-					should_commit = true
+	if not should_commit and not (result is Image) and not (result is PackedByteArray) and cel_now != null and cel_now.has_method("get_image"):
+		var cel_img_now: Image = cel_now.get_image()
+		var cel_changed := _get_cel_offset(cel_now) != offset_before
+		if cel_img_now == null or cel_img_now.is_empty():
+			cel_changed = cel_changed or cel_size_before != Vector2i.ZERO
+		else:
+			cel_changed = cel_changed or cel_img_now.get_size() != cel_size_before or cel_img_now.get_data() != cel_data_before
+		var image_unchanged := image != null and not image.is_empty() and image.get_data() == image_data_before
+		if cel_changed and image_unchanged:
+			image = _cel_to_canvas_image(cel_now, project)
+		if cel_changed:
+			should_commit = true
 
-	# A read-only script must leave the cel exactly as it found it: undo the
-	# temporary canvas expansion above when nothing is being committed.
-	if not should_commit and saved_cel_content != null and cel_before != null and cel_before.has_method("set_content"):
-		cel_before.set_content(saved_cel_content)
-		if cel_before.has_method("update_texture"):
-			cel_before.update_texture()
+	# A read-only script must leave the target cel exactly as it found it.
+	if not should_commit:
+		_restore_cel_state_in_place(pre_eval_target_state)
 
 	if should_commit and image != null:
-		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx, record_undo)
+		_commit_image_change(image, "Eval GDScript", frame_idx, layer_idx, record_undo, pre_eval_target_state)
 		OS.delay_msec(1)
 
 	var canvas = _api.general.get_canvas()

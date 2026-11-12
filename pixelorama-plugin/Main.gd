@@ -142,7 +142,7 @@ func _process_http_request(peer: StreamPeerTCP, buffer: PackedByteArray, header_
 		var health := {
 			"status": "ok",
 			"server": "pix-mcp-bridge",
-			"version": "0.2.0",
+			"version": "0.2.2",
 			"pixelorama_version": _api.general.get_pixelorama_version() if _api else "unknown",
 			"api_version": _api.get_api_version() if _api else -1
 		}

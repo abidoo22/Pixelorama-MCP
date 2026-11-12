@@ -121,8 +121,9 @@ Setting up takes under 5 minutes.
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) (v18 or newer)
-- [Pixelorama](https://www.pixelorama.org/) (**v1.1.10** or **v1.2+**)
-- An MCP Client: [Claude Desktop](https://claude.ai/download), [Cursor](https://cursor.com/), [Antigravity](https://github.com/), or any MCP-compatible environment
+- [Pixelorama](https://www.pixelorama.org/) (**v1.1.10** through **v1.2.4+**)
+- An MCP Client: [Claude Desktop](https://claude.ai/download), [Cursor](https://cursor.com/), [Traycer](https://traycer.ai/), [Antigravity](https://github.com/), or any MCP-compatible environment
+- *(No Godot installation required — the Pixelorama plugin comes pre-built and ready to use!)*
 
 ### 1. Clone & Build the MCP Server
 
@@ -133,15 +134,18 @@ npm install
 npm run build
 ```
 
-### 2. Install the Bridge Extension in Pixelorama
+### 2. Install the Ready-Made Bridge Extension in Pixelorama (No Compiling Needed)
+
+A pre-compiled **`PixMcpBridge.pck`** plugin is already included right in the project folder:
 
 1. Open Pixelorama and navigate to **Edit → Preferences** (`Ctrl+,`) → **Extensions**.
-2. Click **Add Extension** and select `pixelorama-plugin/PixMcpBridge.pck` (or download it from Releases).
-3. Ensure the extension is **Enabled**, then **restart Pixelorama**.
-4. The bridge will listen locally on `http://127.0.0.1:7373`. You can verify by opening:
+2. Click **Add Extension** and select **`PixMcpBridge.pck`** from the `Pixelorama-MCP` folder (also available at `pixelorama-plugin/PixMcpBridge.pck`).
+   - *Updating from an older version?* Remove or disable the old `pix-MCP Bridge` entry first (or quit Pixelorama and replace `PixMcpBridge.pck` in your extensions folder), then add the new one.
+3. Check the **Enable** box next to **pix-MCP Bridge**, then **restart Pixelorama**.
+4. The bridge runs automatically in the background on `http://127.0.0.1:7373`. You can verify it anytime by opening `http://127.0.0.1:7373/health` in your browser or running:
    ```bash
    curl http://127.0.0.1:7373/health
-   # Returns: {"status":"ok","server":"pix-mcp-bridge","pixelorama_version":"...","api_version":9}
+   # Returns: {"status":"ok","server":"pix-mcp-bridge","version":"0.2.2","pixelorama_version":"...","api_version":10}
    ```
 
 ### 3. Connect Your MCP Client
@@ -295,7 +299,7 @@ See the full [Tool Reference](docs/tool-reference.md) for argument tables and JS
 - 📖 [Getting Started Guide](docs/getting-started.md) — Step-by-step installation and client setup.
 - 🛠️ [Tool Reference](docs/tool-reference.md) — Exhaustive documentation of all tools and schemas.
 - 🎨 [Agentic Drawing Playbook](AGENTIC_DRAWING_PLAYBOOK.md) — Shading rules, color ramps, geometry recipes, and batching tricks for LLM agents.
-- 🔌 [Plugin Setup & Compilation](docs/plugin-setup.md) — Building and packing the `.pck` file with Godot Engine.
+- 🔌 [Plugin Setup & Troubleshooting](docs/plugin-setup.md) — Extension folder locations, quarantine fixes, and *(optional)* compiling `.pck` from source for contributors.
 - 📂 [Example Scripts](docs/examples/) — Scripts demonstrating asset imports, banners, and tilesets.
 
 ---

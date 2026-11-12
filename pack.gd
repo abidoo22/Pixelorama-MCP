@@ -23,8 +23,12 @@ func _init():
 	packer.add_file(prefix + "command_handler.gd", plugin_dir + "command_handler.gd")
 
 	# Package GIF exporter shaders to fix root/relative load resolution in Godot 4
-	var similar_shader = "pixelorama-source/addons/gdgifexporter/lookup_similar.gdshader"
-	var color_shader = "pixelorama-source/addons/gdgifexporter/lookup_color.gdshader"
+	var similar_shader = plugin_dir + "lookup_similar.gdshader"
+	if not FileAccess.file_exists(similar_shader):
+		similar_shader = "pixelorama-source/addons/gdgifexporter/lookup_similar.gdshader"
+	var color_shader = plugin_dir + "lookup_color.gdshader"
+	if not FileAccess.file_exists(color_shader):
+		color_shader = "pixelorama-source/addons/gdgifexporter/lookup_color.gdshader"
 	if FileAccess.file_exists(similar_shader):
 		packer.add_file("res://lookup_similar.gdshader", similar_shader)
 		packer.add_file("res://addons/gdgifexporter/lookup_similar.gdshader", similar_shader)

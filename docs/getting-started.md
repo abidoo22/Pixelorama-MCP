@@ -7,8 +7,8 @@ Welcome to **Pixelorama-MCP**! This guide covers everything you need: installing
 ## 📋 Prerequisites
 
 - **Node.js** v18 or higher — [nodejs.org](https://nodejs.org/)
-- **Pixelorama** v1.1.10-stable or higher — [pixelorama.org](https://www.pixelorama.org/)
-- **Godot v4.6+** *(only if you want to modify or recompile the bridge plugin)*
+- **Pixelorama** v1.1.10-stable through v1.2.4+ — [pixelorama.org](https://www.pixelorama.org/)
+- **No Godot Engine required!** `PixMcpBridge.pck` comes pre-compiled and ready to install out of the box *(Godot 4.x is only needed if you edit the plugin's GDScript source code yourself).*
 
 ---
 
@@ -25,17 +25,19 @@ This compiles TypeScript into `mcp-server/dist/index.js`.
 
 ---
 
-## Step 2 — Install the Pixelorama Plugin
+## Step 2 — Install the Pixelorama Plugin (Pre-Built)
 
-The bridge plugin runs a lightweight HTTP server inside Pixelorama on port `7373`. The MCP server talks to it.
+The bridge plugin runs a lightweight local server inside Pixelorama on port `7373`. You do **not** need to compile anything:
 
 1. Launch Pixelorama
 2. Go to **Edit → Preferences** (or `Ctrl+,`) → **Extensions** tab
-3. Click **Add Extension** and select `pixelorama-plugin/PixMcpBridge.pck`
-4. Click **Enable** next to the extension
+3. Click **Add Extension** and select the included **`PixMcpBridge.pck`** file (located in the root of `Pixelorama-MCP/` and in `pixelorama-plugin/PixMcpBridge.pck`)
+4. Check **Enable** next to **pix-MCP Bridge**
 5. Close Preferences and **restart Pixelorama**
 
-**Verify it's working:**
+> **Updating an existing install?** Quit Pixelorama, copy the new `PixMcpBridge.pck` over your existing one (or remove the old extension in **Edit → Preferences → Extensions** and re-add the new `PixMcpBridge.pck`), then restart Pixelorama.
+
+**Verify it's working** (you can open `http://127.0.0.1:7373/health` in your web browser, or run):
 ```bash
 curl -s http://127.0.0.1:7373/health
 ```
@@ -44,8 +46,9 @@ Expected response:
 {
   "status": "ok",
   "server": "pix-mcp-bridge",
-  "pixelorama_version": "v1.2.1-stable",
-  "api_version": 9
+  "version": "0.2.2",
+  "pixelorama_version": "v1.2.4-stable",
+  "api_version": 10
 }
 ```
 
