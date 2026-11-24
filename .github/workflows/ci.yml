@@ -28,6 +28,10 @@ jobs:
         working-directory: mcp-server
         run: npm ci
 
+      - name: Verify npm install peer resolution
+        working-directory: mcp-server
+        run: npm install --dry-run
+
       - name: Type check
         working-directory: mcp-server
         run: npm run typecheck
