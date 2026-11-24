@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as zlib from "zlib";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool, safeJsonArray } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, safeJsonArray, layerHandleSchema } from "../utils/schema_helpers.js";
 import { resolveSafeInputFile } from "../utils/path_guard.js";
 
 // Helper: Paeth Predictor for raw PNG scanline filtering
@@ -287,7 +287,7 @@ export function registerImporterTools(server: McpServer): void {
       frame_height: coerceInt(1).default(32).describe("Height of a single animation frame in pixels"),
       start_frame: coerceInt(0).default(0).describe("Starting frame index in timeline to place imported frames"),
       max_frames: coerceInt(1).optional().describe("Maximum number of frames to import (-1 or omitted for all)"),
-      layer: coerceInt(0).optional().describe("Layer index to import frames onto (defaults to active layer)"),
+      layer: layerHandleSchema.describe("Target layer index, stable layer ID, or layer name to import frames onto (defaults to active layer)"),
     },
     async ({ path, frame_width, frame_height, start_frame, max_frames, layer }) => {
       let safePath: string;

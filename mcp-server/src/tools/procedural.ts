@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool, layerHandleSchema } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, layerHandleSchema, frameRangeFields } from "../utils/schema_helpers.js";
 
 // Helper: Convert Hex to RGB
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -58,7 +58,7 @@ function generateRamp(baseHex: string): {
 export function registerProceduralTools(server: McpServer): void {
   server.tool(
     "apply_outline",
-    "Automatically generate an outline around all non-transparent pixels on the target layer. Great for character silhouettes and game items.",
+    "Automatically generate an outline around all non-transparent pixels on the target layer across one or multiple frames. Accepts layer index, stable ID, or layer name, plus multi-frame targeting ('frames', 'from_frame'/'to_frame', 'tag', 'all_frames').",
     {
       color: z
         .string()
@@ -70,17 +70,31 @@ export function registerProceduralTools(server: McpServer): void {
       inside: coerceBool()
         .default(false)
         .describe("If true, replaces outer pixels of the sprite; if false, expands into transparent pixels around the sprite"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
-      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+      layer: layerHandleSchema,
+      frame: coerceInt().optional().describe("Optional single target frame index (defaults to active frame when no batch selector is given)"),
+      ...frameRangeFields,
     },
-    async ({ color, thickness, inside, layer, frame }) => {
-      const result = await sendCommand("apply_outline", { color, thickness, inside, layer, frame });
+    async ({ color, thickness, inside, layer, frame, frames, from_frame, to_frame, tag, all_frames }) => {
+      const params: Record<string, unknown> = { color, thickness, inside };
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
+      const result = await sendCommand("apply_outline", params);
       if (result.success && result.data) {
+        const count = result.data.frames_processed ?? 1;
+        const frameLabel =
+          count > 1
+            ? `frames:[${(result.data.frames as number[]).join(",")}]`
+            : `frame:${result.data.frame}`;
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Outline applied: ${result.data.outline_pixels} pixels with color ${color} (thickness: ${thickness}px, ${inside ? "inner" : "outer"}) on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+              text: `✅ Outline applied: ${result.data.outline_pixels} pixels with color ${color} (thickness: ${thickness}px, ${inside ? "inner" : "outer"}) on [${frameLabel}, layer:${result.data.layer}]`,
             },
           ],
         };
@@ -101,7 +115,7 @@ export function registerProceduralTools(server: McpServer): void {
         .enum(["flip", "mirror_left_to_right", "mirror_right_to_left", "mirror_top_to_bottom", "mirror_bottom_to_top"])
         .default("mirror_left_to_right")
         .describe("Operation mode: 'flip' (flips entire layer along axis), 'mirror_left_to_right' (copies left half onto right half for symmetrical sprites), 'mirror_right_to_left', 'mirror_top_to_bottom', or 'mirror_bottom_to_top'"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ axis, mode, layer, frame }) => {
@@ -139,46 +153,110 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "apply_dithering",
-    "Fill a rectangular area with a 2x2 checkerboard dither pattern between two colors to blend shading smoothly without color noise.",
+    "Fill a rectangular, elliptical, or selected region with a pixel-art dither pattern between two colors (or stamp a single shadow/highlight color while keeping alternating pixels intact). Supports active selection clipping ('within_selection'), alpha preservation ('preserve_alpha': only dithers existing opaque pixels), string layer handles, and multi-frame targeting.",
     {
-      x: coerceInt().describe("Top-left X coordinate"),
-      y: coerceInt().describe("Top-left Y coordinate"),
-      width: coerceInt(1).describe("Width of dither region"),
-      height: coerceInt(1).describe("Height of dither region"),
-      color1: z.string().describe("First hex color (e.g. highlight or base)"),
-      color2: z.string().describe("Second hex color (e.g. shadow)"),
-      pattern: z.enum(["checker_50", "light_25", "dense_75"]).default("checker_50").describe("Dither density"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
-      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+      x: coerceInt().optional().describe("Top-left X coordinate (defaults to selection bounds or 0)"),
+      y: coerceInt().optional().describe("Top-left Y coordinate (defaults to selection bounds or 0)"),
+      width: coerceInt(1).optional().describe("Width of dither region (defaults to selection width or canvas width)"),
+      height: coerceInt(1).optional().describe("Height of dither region (defaults to selection height or canvas height)"),
+      color1: z
+        .string()
+        .optional()
+        .describe("First hex color, or 'keep'/omitted to leave alternating pixels untouched (ideal for non-destructive shading)"),
+      color2: z
+        .string()
+        .optional()
+        .describe("Second hex color (or 'keep'/omitted to only draw color1 pixels)"),
+      pattern: z
+        .enum(["checker_50", "light_25", "dense_75", "bayer_25", "bayer_50", "bayer_75", "horizontal", "vertical", "diagonal"])
+        .default("checker_50")
+        .describe("Dither pattern density/style"),
+      shape: z
+        .enum(["rect", "ellipse"])
+        .default("rect")
+        .describe("Region mask shape: 'rect' (axis-aligned rectangle) or 'ellipse' (inscribed nub-free ellipse for curved shading / radial falloff)"),
+      within_selection: coerceBool()
+        .default(true)
+        .describe("If true (default), clips dithering to the active Pixelorama selection when one exists"),
+      preserve_alpha: coerceBool()
+        .default(false)
+        .describe("If true, only dithers pixels where the target cel is currently non-transparent (alpha > alpha_threshold)"),
+      alpha_threshold: coerceFloat(0, 1)
+        .default(0.01)
+        .describe("Alpha threshold used when preserve_alpha=true (0.0..1.0, default: 0.01)"),
+      blend: coerceBool()
+        .default(false)
+        .describe("If true, alpha-blends dither colors over existing pixels instead of overwriting"),
+      layer: layerHandleSchema,
+      frame: coerceInt().optional().describe("Optional single target frame index (defaults to active frame when no batch selector is given)"),
+      ...frameRangeFields,
     },
-    async ({ x, y, width, height, color1, color2, pattern, layer, frame }) => {
-      const pixels: Array<{ x: number; y: number; color: string }> = [];
-
-      for (let py = y; py < y + height; py++) {
-        for (let px = x; px < x + width; px++) {
-          let useColor2 = false;
-          if (pattern === "checker_50") {
-            useColor2 = (px + py) % 2 === 0;
-          } else if (pattern === "light_25") {
-            useColor2 = px % 2 === 0 && py % 2 === 0;
-          } else if (pattern === "dense_75") {
-            useColor2 = !(px % 2 === 1 && py % 2 === 1);
-          }
-          pixels.push({ x: px, y: py, color: useColor2 ? color2 : color1 });
-        }
-      }
-
-      const result = await sendCommand("draw_pixels", { pixels, layer, frame });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: result.success
-              ? `✅ Dither applied at (${x},${y}) size ${width}×${height} (${pattern}) on [frame:${result.data?.frame}, layer:${result.data?.layer}]`
-              : `❌ ${result.error}`,
-          },
-        ],
+    async ({
+      x,
+      y,
+      width,
+      height,
+      color1,
+      color2,
+      pattern,
+      shape,
+      within_selection,
+      preserve_alpha,
+      alpha_threshold,
+      blend,
+      layer,
+      frame,
+      frames,
+      from_frame,
+      to_frame,
+      tag,
+      all_frames,
+    }) => {
+      const payload: Record<string, unknown> = {
+        pattern,
+        shape,
+        within_selection,
+        preserve_alpha,
+        alpha_threshold,
+        blend,
       };
+      if (x !== undefined) payload.x = x;
+      if (y !== undefined) payload.y = y;
+      if (width !== undefined) payload.width = width;
+      if (height !== undefined) payload.height = height;
+      if (color1 !== undefined) payload.color1 = color1;
+      if (color2 !== undefined) payload.color2 = color2;
+      if (layer !== undefined) payload.layer = layer;
+      if (frame !== undefined) payload.frame = frame;
+      if (frames !== undefined) payload.frames = frames;
+      if (from_frame !== undefined) payload.from_frame = from_frame;
+      if (to_frame !== undefined) payload.to_frame = to_frame;
+      if (tag !== undefined) payload.tag = tag;
+      if (all_frames !== undefined) payload.all_frames = all_frames;
+
+      const result = await sendCommand("apply_dithering", payload);
+      if (result.success && result.data) {
+        const d = result.data;
+        const count = d.frames_processed ?? 1;
+        const frameLabel =
+          count > 1
+            ? `frames:[${(d.frames as number[]).join(",")}]`
+            : `frame:${d.frame}`;
+        const masks: string[] = [];
+        if (d.shape === "ellipse") masks.push("ellipse");
+        if (d.within_selection) masks.push("selection-clipped");
+        if (d.preserve_alpha) masks.push("preserve-alpha");
+        const maskStr = masks.length > 0 ? ` [${masks.join(", ")}]` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ Dither applied at (${d.x},${d.y}) size ${d.width}×${d.height} (${d.pattern}${maskStr}, ${d.pixels_drawn} px) on [${frameLabel}, layer:${d.layer}]`,
+            },
+          ],
+        };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
     }
   );
 
@@ -191,7 +269,7 @@ export function registerProceduralTools(server: McpServer): void {
       color: z.string().default("#000000").describe("Shadow hex color"),
       opacity: coerceFloat(0, 1).default(0.5).describe("Shadow opacity as float (0.0 to 1.0)"),
       as_new_layer: coerceBool().default(false).describe("If true, generates the shadow onto a dedicated layer beneath the sprite"),
-      layer: coerceInt().optional().describe("Optional target layer index (defaults to active layer)"),
+      layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
     async ({ offset_x, offset_y, color, opacity, as_new_layer, layer, frame }) => {
@@ -378,9 +456,9 @@ export function registerProceduralTools(server: McpServer): void {
 
   server.tool(
     "draw_text",
-    "Render crisp pixel typography / bitmap font directly onto the canvas (essential for dialogue boxes, title screens, damage numbers, and HUDs). Uses a stepped pixel-art scaling ladder (Tier 1: 4-10 -> 1x/5px glyphs, Tier 2: 11-18 -> 2x/10px glyphs, Tier 3: 19-26 -> 3x/15px glyphs, Tier 4: 27-34 -> 4x/20px glyphs) or explicit 'scale' (1..8). Returns resolved metrics (glyph_height, char_advance) and ink bounding box.",
+    "Render crisp pixel typography / full printable ASCII (32–126) bitmap font directly onto the canvas — supports uppercase (A–Z), true lowercase (a–z with descenders), digits (0–9), and all standard ASCII punctuation/symbols, plus optional drop shadow, outline, custom letter spacing, and fixed cell width for bitmap font atlases. Uses a stepped scaling ladder (Tier 1: 4-10 -> 1x/5px, Tier 2: 11-18 -> 2x/10px, Tier 3: 19-26 -> 3x/15px, Tier 4: 27-34 -> 4x/20px) or explicit 'scale' (1..8).",
     {
-      text: z.string().describe("Text string to draw (supports newline '\\n')"),
+      text: z.string().describe("Text string to draw (full ASCII 32–126 + newline '\\n')"),
       x: coerceInt().default(0).describe("Starting top-left X position in pixels"),
       y: coerceInt().default(0).describe("Starting top-left Y position in pixels"),
       color: z.string().default("#ffffff").describe("Font hex color (e.g. '#ffffff' or '#e3d0a6')"),
@@ -390,18 +468,65 @@ export function registerProceduralTools(server: McpServer): void {
       scale: coerceInt(1, 8)
         .optional()
         .describe("Explicit integer pixel scaling factor (1 to 8: 1=5px glyphs, 2=10px glyphs, 3=15px glyphs, etc.). Takes precedence over font_size"),
+      shadow_color: z
+        .string()
+        .optional()
+        .describe("Optional drop-shadow hex color drawn behind text (e.g. '#1a1020' or '#000000aa')"),
+      shadow_offset_x: coerceInt(-16, 16)
+        .optional()
+        .describe("Horizontal shadow offset in pixels (defaults to effective scale)"),
+      shadow_offset_y: coerceInt(-16, 16)
+        .optional()
+        .describe("Vertical shadow offset in pixels (defaults to effective scale)"),
+      outline_color: z
+        .string()
+        .optional()
+        .describe("Optional 1-texel outline hex color drawn around text glyphs (e.g. '#000000')"),
+      outline_mode: z
+        .enum(["full", "cardinal"])
+        .default("full")
+        .describe("Outline connectivity when outline_color is set: 'full' (8-way including corners) or 'cardinal' (4-way N/S/E/W)"),
+      letter_spacing: coerceInt(0, 16)
+        .default(1)
+        .describe("Horizontal spacing between glyphs in unscaled font texels (default: 1)"),
+      cell_width: coerceInt(1, 32)
+        .optional()
+        .describe("Optional fixed advance width per character in unscaled font texels (useful for fixed-grid bitmap font atlases)"),
       layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ text, x, y, color, font_size, scale, layer, frame }) => {
+    async ({
+      text,
+      x,
+      y,
+      color,
+      font_size,
+      scale,
+      shadow_color,
+      shadow_offset_x,
+      shadow_offset_y,
+      outline_color,
+      outline_mode,
+      letter_spacing,
+      cell_width,
+      layer,
+      frame,
+    }) => {
       const payload: Record<string, unknown> = {
         text,
         x,
         y,
         color,
         font_size,
+        outline_mode,
+        letter_spacing,
       };
       if (scale !== undefined) payload.scale = scale;
+      if (shadow_color !== undefined) payload.shadow_color = shadow_color;
+      if (shadow_offset_x !== undefined) payload.shadow_offset_x = shadow_offset_x;
+      if (shadow_offset_y !== undefined) payload.shadow_offset_y = shadow_offset_y;
+      if (outline_color !== undefined) payload.outline_color = outline_color;
+      if (cell_width !== undefined) payload.cell_width = cell_width;
       if (layer !== undefined) payload.layer = layer;
       if (frame !== undefined) payload.frame = frame;
       const result = await sendCommand("draw_text", payload);
@@ -410,13 +535,17 @@ export function registerProceduralTools(server: McpServer): void {
       const metricsStr = d?.scale !== undefined
         ? ` (scale: ${d.scale}x, glyph_height: ${d.glyph_height ?? d.scale * 5}px, char_advance: ${d.char_advance ?? d.scale * 5}px)`
         : "";
+      const fxTags: string[] = [];
+      if (d?.has_outline) fxTags.push(`outline:${outline_color}`);
+      if (d?.has_shadow) fxTags.push(`shadow:${shadow_color}`);
+      const fxStr = fxTags.length > 0 ? ` [${fxTags.join(", ")}]` : "";
       const bboxStr = bbox ? ` [BoundingBox: ${bbox.width}×${bbox.height} at (${bbox.left},${bbox.top}) to (${bbox.right},${bbox.bottom}), advance: ${bbox.advance}px]` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Rendered "${text}" (${d?.chars_drawn} characters)${metricsStr} at (${x}, ${y}) with color ${color} on [frame:${d?.frame}, layer:${d?.layer}]${bboxStr}`
+              ? `✅ Rendered "${text}" (${d?.chars_drawn} characters)${metricsStr}${fxStr} at (${x}, ${y}) with color ${color} on [frame:${d?.frame}, layer:${d?.layer}]${bboxStr}`
               : `❌ ${result.error}`,
           },
         ],

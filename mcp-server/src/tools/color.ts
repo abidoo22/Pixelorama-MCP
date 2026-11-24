@@ -353,16 +353,22 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "clean_isolated_pixels",
-    "Automatically scan the canvas and remove/blend orphan 1px noise (isolated rogue pixels with 0 matching neighbors) for clean retro pixel art.",
-    {},
-    async () => {
-      const result = await sendCommand("clean_isolated_pixels", {});
+    "Automatically scan the target cel and remove orphan 1px noise (isolated rogue pixels with 0 matching neighbors) for clean retro pixel art.",
+    {
+      layer: layerHandleSchema,
+      frame: coerceInt(0).optional().describe("Optional target frame index (defaults to active frame)"),
+    },
+    async ({ layer, frame }) => {
+      const params: Record<string, unknown> = {};
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      const result = await sendCommand("clean_isolated_pixels", params);
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Cleaned ${result.data?.isolated_pixels_cleaned} isolated noise pixels from active cel`
+              ? `✅ Cleaned ${result.data?.isolated_pixels_cleaned} isolated noise pixels on [frame:${result.data?.frame ?? 0}, layer:${result.data?.layer ?? 0}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -372,18 +378,23 @@ export function registerColorTools(server: McpServer): void {
 
   server.tool(
     "remap_to_palette",
-    "Quantize and snap all canvas pixels to the closest matching Euclidean color in the specified palette array.",
+    "Quantize and snap all pixels on the target cel to the closest matching color in the specified palette array.",
     {
       palette_colors: z.array(z.string()).describe("Array of hex colors to quantize onto (e.g. ['#000000', '#ffffff', '#e74c3c'])"),
+      layer: layerHandleSchema,
+      frame: coerceInt(0).optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ palette_colors }) => {
-      const result = await sendCommand("remap_to_palette", { palette_colors });
+    async ({ palette_colors, layer, frame }) => {
+      const params: Record<string, unknown> = { palette_colors };
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      const result = await sendCommand("remap_to_palette", params);
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Remapped ${result.data?.remapped_pixels} pixels to ${result.data?.palette_size}-color palette`
+              ? `✅ Remapped ${result.data?.remapped_pixels} pixels to ${result.data?.palette_size}-color palette on [frame:${result.data?.frame ?? 0}, layer:${result.data?.layer ?? 0}]`
               : `❌ ${result.error}`,
           },
         ],

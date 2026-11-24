@@ -111,14 +111,15 @@ Switches active focus to a different open project tab by its name or 0-based ind
 ---
 
 ### `close_canvas`
-Closes an open canvas/project tab.
+Closes an open canvas/project tab. When closing the last remaining tab, safely creates a fresh blank 64×64 `"untitled"` canvas first by default so Pixelorama stays open without errors.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `index` | number | — | Canvas index to close (defaults to active canvas) |
+| `replace_with_blank` | boolean | — | If `true` (default) and closing the only open canvas, opens a fresh blank 64×64 `"untitled"` tab before closing; set `false` to block closing the last tab |
 
 ```json
-{ "success": true, "data": { "closed_index": 1, "closed_name": "Dungeon_Tileset", "remaining_canvases": 1, "active_index": 0 } }
+{ "success": true, "data": { "closed_index": 1, "closed_name": "Dungeon_Tileset", "remaining_canvases": 1, "active_index": 0, "replaced_with_blank": false } }
 ```
 
 ---
@@ -303,7 +304,7 @@ Draws a single pixel.
 ---
 
 ### `draw_rect`
-Draws a filled or outlined rectangle.
+Draws a filled or outlined rectangle, with optional rounded or chamfered corners.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -313,13 +314,15 @@ Draws a filled or outlined rectangle.
 | `height` | number | ✅ | Height in pixels |
 | `color` | string | — | Hex color (default: `"#000000"`) |
 | `filled` | boolean | — | `true` = filled (default), `false` = outline only |
-| `layer` | number | — | Optional target layer index |
+| `corner_radius` | number | — | Corner radius in pixels (`0` = sharp, clamped to `min(width/2, height/2)`) |
+| `corner_style` | string | — | `"round"` (default, circular pixel arc) or `"chamfer"` (45° diagonal bevel) |
+| `layer` | number \| string | — | Optional target layer index, stable ID, or name |
 | `frame` | number | — | Optional target frame index |
 
 ---
 
 ### `draw_ellipse`
-Draws a filled or outlined ellipse or circle.
+Draws a pixel-art filled or outlined ellipse/circle using Zingl's integer Bresenham midpoint algorithm (flat cardinal caps, zero 1px polar nubs, deduplicated outline plotting).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -329,7 +332,7 @@ Draws a filled or outlined ellipse or circle.
 | `ry` | number | ✅ | Y radius |
 | `color` | string | — | Hex color (default: `"#000000"`) |
 | `filled` | boolean | — | `true` = filled (default), `false` = outline only |
-| `layer` | number | — | Optional target layer index |
+| `layer` | number \| string | — | Optional target layer index, stable ID, or name |
 | `frame` | number | — | Optional target frame index |
 
 ---
@@ -476,11 +479,12 @@ Gets or sets playback speed in frames per second.
 ---
 
 ### `add_frame`
-Appends a blank frame to the animation timeline.
+Inserts one or more blank frames sequentially into the animation timeline in a single undoable action.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `after_frame` | number | Insert after this frame index (default: current frame) |
+| `count` | number | Number of blank frames to insert (`1..500`, default: `1`) |
 
 ---
 
@@ -494,21 +498,23 @@ Deletes a frame by index (cannot delete the only remaining frame).
 ---
 
 ### `duplicate_frame`
-Deep-copies all layer pixel data of a frame into a new frame.
+Deep-copies all layer pixel data of a frame into one or more new frames in a single undoable action.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `index` | number | Frame index to duplicate (default: current frame) |
+| `count` | number | Number of copies to insert (`1..100`, default: `1`) |
 
 ---
 
 ### `set_frame_duration`
-Sets duration multiplier of a frame.
+Sets duration multiplier of one or multiple frames.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `index` | number | — | Frame index (default: current frame) |
+| `index` | number | — | Single frame index (default: current frame) |
 | `duration` | number | ✅ | Multiplier (`1.0` = normal speed, `2.0` = half speed) |
+| `frames` / `from_frame` / `to_frame` / `tag` / `all_frames` | — | — | Optional multi-frame batch targeting |
 
 ---
 
@@ -522,25 +528,29 @@ Switches the active frame for drawing.
 ---
 
 ### `switch_cel` / `copy_cel` / `clear_cel`
-Fine-grained control over individual layer × frame cels.
+Fine-grained control over individual or batched layer × frame cels (accepting integer index, stable ID, or layer name).
 
-- **`switch_cel`**: `{ frame: number, layer: number }`
-- **`copy_cel`**: `{ src_frame: number, src_layer: number, dst_frame: number, dst_layer: number }`
-- **`clear_cel`**: `{ frame?: number, layer?: number }`
+- **`switch_cel`**: `{ frame: number, layer: number | string }`
+- **`copy_cel`**: `{ src_frame: number, src_layer?: number | string, dst_frame?: number, dst_frames?: number[], dst_from_frame?: number, dst_to_frame?: number, dst_tag?: string, dst_layer?: number | string }`
+- **`clear_cel`**: `{ frame?: number, frames?: number[], from_frame?: number, to_frame?: number, tag?: string, all_frames?: boolean, layer?: number | string }`
 
 ---
 
 ### `export_animation`
-Exports animation frames as individual PNG files or packed into a spritesheet.
+Exports animation frames as individual PNG files or packed into a spritesheet. Both modes support `tag`, `start_frame`/`end_frame`, and nearest-neighbor `scale`; spritesheet mode also supports `exact_path` or `exact_filename`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `path` | string | — | Directory path to export into |
+| `path` | string | — | Directory path to export into (optional when `exact_path` is provided in `"spritesheet"` mode) |
 | `prefix` | string | `"frame"` | Filename prefix (e.g. `"walk"`) |
 | `mode` | string | `"frames"` | `"frames"` (individual PNGs) or `"spritesheet"` |
-| `columns` | number | — | Spritesheet columns (only for `"spritesheet"`) |
-| `start_frame` | number | `0` | First frame to export (only for `"frames"`) |
-| `end_frame` | number | last | Last frame to export (only for `"frames"`) |
+| `columns` | number | — | Spritesheet columns (only for `"spritesheet"`, defaults to exported frame count) |
+| `tag` | string | — | Animation tag name — exports only frames belonging to that tag (works in both modes) |
+| `start_frame` | number | `0` | First 0-based frame to export (works in both `"frames"` and `"spritesheet"` modes) |
+| `end_frame` | number | last | Last 0-based frame to export (works in both `"frames"` and `"spritesheet"` modes) |
+| `exact_path` | string | — | Exact absolute `.png` file path for `"spritesheet"` mode (suppresses `_spritesheet.png` suffix) |
+| `exact_filename` | string | — | Exact `.png` filename inside `path` for `"spritesheet"` mode (suppresses `_spritesheet.png` suffix) |
+| `scale` | number | `1` | Non-destructive nearest-neighbor upscale multiplier (`1..32`) |
 
 ---
 
@@ -741,23 +751,27 @@ Imports any external PNG image into Pixelorama as clean pixel art. Automatically
 ## 10. Procedural Game Art
 
 ### `apply_outline`
-Automatically detects sprite borders on the active layer and applies an outline of specified color and thickness.
+Automatically detects sprite borders on the target layer across one or multiple frames and applies an outline of specified color and thickness.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `color` | string | `"#000000"` | Outline hex color |
 | `thickness` | number | `1` | Outline thickness in pixels (1–4) |
 | `inside` | boolean | `false` | Inner outline (`true`) or outer border (`false`) |
+| `layer` | number \| string | active | Target layer index, stable ID, or name |
+| `frame` / `frames` / `from_frame` / `to_frame` / `tag` / `all_frames` | — | active | Single or multi-frame targeting |
 
 ---
 
 ### `mirror_layer`
-Mirrors or flips the active cel. Essential for symmetrical characters, monsters, weapons, armor, and chests.
+Mirrors or flips the target cel. Essential for symmetrical characters, monsters, weapons, armor, and chests.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `axis` | string | `"horizontal"` | `"horizontal"` or `"vertical"` |
-| `mode` | string | `"mirror_left_to_right"` | `"flip"`, `"mirror_left_to_right"`, `"mirror_right_to_left"`, or `"mirror_top_to_bottom"` |
+| `mode` | string | `"mirror_left_to_right"` | `"flip"`, `"mirror_left_to_right"`, `"mirror_right_to_left"`, `"mirror_top_to_bottom"`, or `"mirror_bottom_to_top"` |
+| `layer` | number \| string | active | Target layer index, stable ID, or name |
+| `frame` | number | active | Target frame index |
 
 ---
 
@@ -771,14 +785,21 @@ Calculates a 5-step shading ramp (`highlight`, `light`, `base`, `shadow`, `deepS
 ---
 
 ### `apply_dithering`
-Fills a region with 2×2 checkerboard dithering between two colors for smooth retro shading transitions.
+Natively fills a rectangular, elliptical, or selected region inside Godot with a pixel-art dither pattern, with optional selection clipping, alpha preservation, `"keep"` non-destructive shading, string layer handles, and multi-frame targeting.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `x`, `y` | number | — | Top-left position |
-| `width`, `height` | number | — | Region size in pixels |
-| `color1`, `color2` | string | — | Two hex colors to blend |
-| `pattern` | string | `"checker_50"` | `"checker_50"`, `"light_25"`, or `"dense_75"` |
+| `x`, `y` | number | selection or `0` | Top-left position (optional) |
+| `width`, `height` | number | selection or canvas | Region size in pixels (optional) |
+| `color1`, `color2` | string | — | Two hex colors to alternate, or `"keep"`/omitted on one slot to preserve existing pixels |
+| `pattern` | string | `"checker_50"` | `"checker_50"`, `"light_25"`, `"dense_75"`, `"bayer_25"`, `"bayer_50"`, `"bayer_75"`, `"horizontal"`, `"vertical"`, or `"diagonal"` |
+| `shape` | string | `"rect"` | `"rect"` or `"ellipse"` (nub-free inscribed ellipse) |
+| `within_selection` | boolean | `true` | Clips dithering to the active Pixelorama selection when one exists |
+| `preserve_alpha` | boolean | `false` | When `true`, only modifies existing non-transparent pixels (`alpha > alpha_threshold`) |
+| `alpha_threshold` | number | `0.01` | Minimum alpha when `preserve_alpha: true` |
+| `blend` | boolean | `false` | Alpha-blend over existing pixels instead of overwriting |
+| `layer` | number \| string | active | Target layer index, stable ID, or name |
+| `frame` / `frames` / `from_frame` / `to_frame` / `tag` / `all_frames` | — | active | Single or multi-frame targeting |
 
 ---
 
@@ -923,11 +944,14 @@ Interpolate cel translation `(dx, dy)` across intermediate frames for smooth mot
 ---
 
 ### `export_gif` / `export_apng`
-Render animated `.gif` or `.apng` directly to disk.
+Render animated `.gif` or `.apng` directly to disk, with optional tag/range filtering and crisp nearest-neighbor scaling.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | ✅ | Destination file path |
+| `scale` | number | — | Non-destructive nearest-neighbor upscale multiplier (`1..32`, default `1`) |
+| `tag` | string | — | Optional animation tag name — exports only frames belonging to that tag |
+| `start_frame` / `end_frame` | number | — | Optional 0-based inclusive frame range to export |
 
 ---
 
@@ -1086,18 +1110,64 @@ Verify and auto-fix tile wrap-around border seams.
 ---
 
 ### `draw_text`
-Render crisp bitmap pixel typography directly onto the canvas. Supports integer scaling (`scale: 1..8`) and auto-scaling from `font_size`. Returns exact ink bounding box `{ left, top, right, bottom, width, height, advance }` as well as resolved metrics (`scale`, `glyph_height`, `char_advance`, `line_height`) to enable pixel-perfect alignment without extra probes.
+Render crisp full printable ASCII (32–126) bitmap pixel typography directly onto the canvas — uppercase (`A–Z`), true lowercase (`a–z` with descenders), digits (`0–9`), and all standard ASCII punctuation/symbols — with optional drop shadow, outline, custom letter spacing, and fixed `cell_width` for bitmap font atlases.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `text` | string | — | Text string to render (supports `\n` newlines) |
-| `x` | number | `0` | Starting top-left X position in pixels |
-| `y` | number | `0` | Starting top-left Y position in pixels |
+| `text` | string | — | Text string to render (ASCII 32–126 + `\n` newlines) |
+| `x`, `y` | number | `0` | Starting top-left X/Y position in pixels |
 | `color` | string | `#ffffff` | Font hex color |
 | `scale` | number | — | Explicit integer pixel scaling factor (`1` to `8`). Takes precedence over `font_size` |
-| `font_size` | number | `8` | Font size ladder in pixels (`4` to `64`). Auto-maps: $4..10 \rightarrow 1\times$ (5px glyphs), $11..18 \rightarrow 2\times$ (10px glyphs), $19..26 \rightarrow 3\times$ (15px glyphs), $27..34 \rightarrow 4\times$ (20px glyphs), $> 34 \rightarrow \text{round}(fs/7)$ |
-| `layer` | number \| string | — | Target layer index or name |
-| `frame` | number | current | Target frame index |
+| `font_size` | number | `8` | Font size ladder (`4..64`): `4..10` → 1×, `11..18` → 2×, `19..26` → 3×, `27..34` → 4×, `>34` → `round(fs/7)` |
+| `shadow_color` | string | — | Optional drop-shadow hex color rendered behind text/outline |
+| `shadow_offset_x`, `shadow_offset_y` | number | `scale` | Shadow offset in pixels |
+| `outline_color` | string | — | Optional 1-texel outline hex color around glyphs |
+| `outline_mode` | string | `"full"` | `"full"` (8-way) or `"cardinal"` (4-way N/S/E/W) |
+| `letter_spacing` | number | `1` | Horizontal spacing in unscaled font texels |
+| `cell_width` | number | — | Optional fixed advance width per character in unscaled texels (for bitmap font sheets) |
+| `layer` | number \| string | active | Target layer index, stable ID, or name |
+| `frame` | number | active | Target frame index |
+
+---
+
+### `validate_sprite`
+Run QA checks across a single cel, an animation tag, or an entire multi-frame strip — detects enclosed holes, orphan pixels, color counts, bounding boxes, and optional compliance against a named Pixelorama palette (`palette: "haven_master"` or `"active"`) or explicit `allowed_colors`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `all_layers` | boolean | `false` | Composite all visible layers (`true`) or validate a single layer (`false`) |
+| `layer` | number \| string | active | Target layer index, stable ID, or name |
+| `frame` / `frames` / `from_frame` / `to_frame` / `tag` / `all_frames` | — | active | Single-cel or full-strip/tag QA sweep |
+| `palette` | string | — | Named Pixelorama global/project palette (or `"active"`) to validate every pixel against |
+| `allowed_colors` | string[] | — | Explicit list of allowed hex colors |
+| `palette_tolerance` | number | `0` | RGB tolerance (`0` = exact 8-bit match) |
+| `ignore_alpha_for_palette` | boolean | `true` | Match pixel RGB against palette RGB regardless of alpha |
+| `check_holes` / `check_orphans` | boolean | `true` | Toggle enclosed hole and orphan pixel checks |
+
+---
+
+### `get_layer_markers`
+Extract all non-transparent pixel coordinates from any layer (including **hidden** layers such as `"anchors"`, `"sockets"`, or `"hitboxes"`) across one or all frames, returning `{ "<frame>": { "#rrggbb": [[x, y], ...] } }` directly from Pixelorama without unpacking `.pxo` ZIP files.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `layer` | number \| string | active | Target layer index, stable ID, or name (works when hidden) |
+| `frame` / `frames` / `from_frame` / `to_frame` / `tag` / `all_frames` | — | all frames | Frame selection (defaults to scanning all frames when omitted) |
+| `include_alpha` | boolean | `false` | Emit `#rrggbbaa` keys instead of `#rrggbb` |
+| `include_empty_frames` | boolean | `false` | Include `{}` entries for frames with no markers |
+| `min_alpha` | number | `0.01` | Minimum alpha to include a pixel |
+| `colors` | string[] | — | Optional filter list of marker hex colors |
+| `max_pixels_per_frame` | number | `4096` | Safety cap on marker pixels returned per frame |
+
+---
+
+### `batch_commands`
+Execute an ordered sequence of up to 200 Pixelorama tool commands inside Godot in a single MCP/HTTP round-trip. Enforces strict tool allowlisting (disallowing nested `batch_commands` and `eval_gdscript`) and `path_guard.ts` validation on all export/save operations.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `operations` | `{ tool, params }[]` | ✅ | Ordered array of tool operations (`1..200`) |
+| `stop_on_error` | boolean | `true` | Halt at first failure (`true`) or continue remaining operations (`false`) |
 
 ```json
 {

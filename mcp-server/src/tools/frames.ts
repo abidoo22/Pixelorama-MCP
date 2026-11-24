@@ -7,8 +7,9 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as nodePath from "path";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, layerHandleSchema } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, layerHandleSchema, framesArraySchema, frameRangeFields } from "../utils/schema_helpers.js";
 import { resolveSafeDirectory, resolveSafeOutputFile, sanitizeAssetName } from "../utils/path_guard.js";
 
 export function registerFrameTools(server: McpServer): void {
@@ -82,18 +83,23 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "add_frame",
-    "Add a new blank animation frame after the specified frame index.",
+    "Add one or more blank animation frames after the specified frame index in a single undoable operation.",
     {
       after_frame: coerceInt(0)
         .optional()
         .describe("Insert after this frame index (defaults to current frame)"),
+      count: coerceInt(1, 500)
+        .default(1)
+        .describe("Number of blank frames to insert sequentially (1..500, default: 1)"),
     },
-    async ({ after_frame }) => {
-      const params: Record<string, unknown> = {};
+    async ({ after_frame, count }) => {
+      const params: Record<string, unknown> = { count };
       if (after_frame !== undefined) params.after_frame = after_frame;
       const result = await sendCommand("add_frame", params);
+      const inserted = result.data?.inserted_range as number[] | undefined;
+      const rangeStr = count > 1 && inserted ? ` [frames ${inserted[0]}..${inserted[1]}]` : "";
       let text = result.success
-        ? `✅ Frame added (total: ${result.data?.total_frames})`
+        ? `✅ Added ${result.data?.count ?? count} frame(s)${rangeStr} (total: ${result.data?.total_frames})`
         : `❌ ${result.error}`;
       if (result.data?.active_cursor) {
         text += `\n🎯 Active: frame ${result.data.active_cursor.frame}, layer ${result.data.active_cursor.layer} ("${result.data.active_cursor.layer_name}")`;
@@ -140,18 +146,26 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "duplicate_frame",
-    "Duplicate an animation frame, inserting the copy immediately after the original. All layer pixel data is deep-copied.",
+    "Duplicate an animation frame one or more times, inserting copies immediately after the original in a single undoable operation. All layer pixel data is deep-copied.",
     {
       index: coerceInt(0)
         .optional()
         .describe("Frame index to duplicate (defaults to current frame)"),
+      count: coerceInt(1, 100)
+        .default(1)
+        .describe("Number of copies to insert (1..100, default: 1)"),
     },
-    async ({ index }) => {
-      const params: Record<string, unknown> = {};
+    async ({ index, count }) => {
+      const params: Record<string, unknown> = { count };
       if (index !== undefined) params.index = index;
       const result = await sendCommand("duplicate_frame", params);
+      const inserted = result.data?.inserted_range as number[] | undefined;
+      const whereStr =
+        count > 1 && inserted
+          ? `at indices ${inserted[0]}..${inserted[1]}`
+          : `at index ${result.data?.inserted_at}`;
       let text = result.success
-        ? `✅ Frame duplicated at index ${result.data?.inserted_at} (total: ${result.data?.total_frames}, pixels copied: ${result.data?.pixels_copied ?? 0})`
+        ? `✅ Frame duplicated ${count > 1 ? `${count}x ` : ""}${whereStr} (total: ${result.data?.total_frames}, pixels copied: ${result.data?.pixels_copied ?? 0})`
         : `❌ ${result.error}`;
       if (result.data?.warning) {
         text += `\n⚠️ Warning: ${result.data.warning}`;
@@ -172,24 +186,32 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "set_frame_duration",
-    "Set the duration multiplier of a frame (relative to 1/fps). E.g. 2 means the frame lasts twice as long.",
+    "Set the duration multiplier of one or more frames (relative to 1/fps). Supports single 'index', explicit 'frames' list, 'from_frame'/'to_frame' range, 'tag', or 'all_frames'.",
     {
       index: coerceInt(0)
         .optional()
-        .describe("Frame index (defaults to current frame)"),
+        .describe("Single frame index (defaults to current frame when no batch selector is given)"),
       duration: coerceFloat(0.01)
         .describe("Duration multiplier (1.0 = normal speed, 2.0 = half speed)"),
+      ...frameRangeFields,
     },
-    async ({ index, duration }) => {
+    async ({ index, duration, frames, from_frame, to_frame, tag, all_frames }) => {
       const params: Record<string, unknown> = { duration };
       if (index !== undefined) params.index = index;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
       const result = await sendCommand("set_frame_duration", params);
+      const count = result.data?.frames_updated ?? 1;
+      const label = count > 1 ? `${count} frames (${(result.data?.frames as number[]).join(", ")})` : `Frame ${result.data?.index ?? index ?? "current"}`;
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Frame ${index ?? "current"} duration set to ${duration}x`
+              ? `✅ ${label} duration set to ${duration}x`
               : `❌ ${result.error}`,
           },
         ],
@@ -244,22 +266,44 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "copy_cel",
-    "Copy pixel data from one cel to another. Useful for animation — copy frame 0 to frame 1 then make small changes.",
+    "Copy pixel data from one cel to one or multiple destination frames in a single call. Supports single 'dst_frame', explicit 'dst_frames' list, 'dst_from_frame'/'dst_to_frame' range, or 'dst_tag'.",
     {
       src_frame: coerceInt(0).describe("Source frame index"),
-      src_layer: layerHandleSchema.describe("Source layer index, ID, or name"),
-      dst_frame: coerceInt(0).describe("Destination frame index"),
-      dst_layer: layerHandleSchema.describe("Destination layer index, ID, or name"),
+      src_layer: layerHandleSchema.describe("Source layer index, ID, or name (defaults to active layer)"),
+      dst_frame: coerceInt(0)
+        .optional()
+        .describe("Single destination frame index (optional if dst_frames, dst_from_frame/dst_to_frame, or dst_tag is given)"),
+      dst_frames: framesArraySchema.describe("Optional array of destination frame indices to copy into (e.g. [1, 2, 3])"),
+      dst_from_frame: coerceInt(0)
+        .optional()
+        .describe("Optional inclusive start destination frame index"),
+      dst_to_frame: coerceInt(0)
+        .optional()
+        .describe("Optional inclusive end destination frame index"),
+      dst_tag: z
+        .string()
+        .optional()
+        .describe("Optional animation tag name — copies source cel into all frames of that tag"),
+      dst_layer: layerHandleSchema.describe("Destination layer index, ID, or name (defaults to src_layer)"),
     },
-    async ({ src_frame, src_layer, dst_frame, dst_layer }) => {
-      const result = await sendCommand("copy_cel", {
-        src_frame,
-        src_layer,
-        dst_frame,
-        dst_layer,
-      });
+    async ({ src_frame, src_layer, dst_frame, dst_frames, dst_from_frame, dst_to_frame, dst_tag, dst_layer }) => {
+      const params: Record<string, unknown> = { src_frame };
+      if (src_layer !== undefined) params.src_layer = src_layer;
+      if (dst_frame !== undefined) params.dst_frame = dst_frame;
+      if (dst_frames !== undefined) params.dst_frames = dst_frames;
+      if (dst_from_frame !== undefined) params.dst_from_frame = dst_from_frame;
+      if (dst_to_frame !== undefined) params.dst_to_frame = dst_to_frame;
+      if (dst_tag !== undefined) params.dst_tag = dst_tag;
+      if (dst_layer !== undefined) params.dst_layer = dst_layer;
+
+      const result = await sendCommand("copy_cel", params);
+      const copiedList = result.data?.dst_frames as number[] | undefined;
+      const dstLabel =
+        copiedList && copiedList.length > 1
+          ? `frames:[${copiedList.join(",")}]`
+          : `frame:${result.data?.dst_frame ?? dst_frame}`;
       let text = result.success
-        ? `✅ Cel [frame:${src_frame} layer:${src_layer}] → [frame:${dst_frame} layer:${dst_layer}] (${result.data?.pixels_copied ?? 0} pixels copied)`
+        ? `✅ Cel [frame:${src_frame} layer:${result.data?.src_layer ?? src_layer}] → [${dstLabel} layer:${result.data?.dst_layer ?? dst_layer ?? src_layer}] (${result.data?.cels_copied ?? 1} cel(s), ${result.data?.pixels_copied ?? 0} pixels each)`
         : `❌ ${result.error}`;
       if (result.data?.warning) {
         text += `\n⚠️ Warning: ${result.data.warning}`;
@@ -277,25 +321,36 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "clear_cel",
-    "Clear all pixels in a cel, making it fully transparent. This action is recorded in history and can be undone using 'undo'.",
+    "Clear all pixels in one or more cels, making them fully transparent. Supports single 'frame', explicit 'frames' list, 'from_frame'/'to_frame' range, 'tag', or 'all_frames'. Recorded in undo history.",
     {
       frame: coerceInt(0)
         .optional()
-        .describe("Frame index (defaults to current frame)"),
+        .describe("Single frame index (defaults to current frame when no batch selector is given)"),
       layer: layerHandleSchema
         .describe("Target layer index (defaults to current layer), stable layer ID, or layer name"),
+      ...frameRangeFields,
     },
-    async ({ frame, layer }) => {
+    async ({ frame, layer, frames, from_frame, to_frame, tag, all_frames }) => {
       const params: Record<string, unknown> = {};
       if (frame !== undefined) params.frame = frame;
       if (layer !== undefined) params.layer = layer;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
       const result = await sendCommand("clear_cel", params);
+      const clearedCount = result.data?.frames_cleared ?? 1;
+      const frameStr =
+        clearedCount > 1
+          ? `frames:[${(result.data?.frames as number[]).join(",")}]`
+          : `frame:${result.data?.frame}`;
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Cel cleared on [frame:${result.data?.frame}, layer:${result.data?.layer}] (action is undoable with 'undo')`
+              ? `✅ Cleared ${clearedCount} cel(s) on [${frameStr}, layer:${result.data?.layer}] (action is undoable with 'undo')`
               : `❌ ${result.error}`,
           },
         ],
@@ -307,51 +362,101 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "export_animation",
-    "Export the animation. Mode 'frames' saves individual PNGs (frame_0000.png, frame_0001.png, …). Mode 'spritesheet' packs all frames into one image grid.",
+    "Export the animation. Mode 'frames' saves individual PNGs (frame_0000.png, frame_0001.png, …). Mode 'spritesheet' packs frames into one image grid. Both modes support 'tag', 'start_frame'/'end_frame', and nearest-neighbor 'scale'; spritesheet mode also supports 'exact_path' or 'exact_filename' to avoid the default '_spritesheet.png' suffix.",
     {
-      path: z.string().describe("Absolute directory path to export into"),
+      path: z
+        .string()
+        .optional()
+        .describe("Absolute directory path to export into (required unless 'exact_path' is provided in spritesheet mode)"),
       prefix: z
         .string()
         .default("frame")
-        .describe("Filename prefix (e.g. 'walk' → walk_0000.png)"),
+        .describe("Filename prefix (e.g. 'walk' → walk_0000.png or walk_spritesheet.png)"),
       mode: z
         .enum(["frames", "spritesheet"])
         .default("frames")
         .describe("Export mode: 'frames' or 'spritesheet'"),
       columns: coerceInt(1)
         .optional()
-        .describe("Spritesheet columns (only for 'spritesheet' mode, defaults to frame count)"),
+        .describe("Spritesheet columns (only for 'spritesheet' mode, defaults to exported frame count)"),
+      tag: z
+        .string()
+        .optional()
+        .describe("Optional animation tag name — exports only frames belonging to that tag (works in both 'frames' and 'spritesheet' modes)"),
       start_frame: coerceInt(0)
         .optional()
-        .describe("First frame to export (only for 'frames' mode, defaults to 0)"),
+        .describe("First 0-based frame index to export (works in both 'frames' and 'spritesheet' modes, defaults to 0)"),
       end_frame: coerceInt(0)
         .optional()
-        .describe("Last frame to export (only for 'frames' mode, defaults to last frame)"),
+        .describe("Last 0-based frame index to export (works in both 'frames' and 'spritesheet' modes, defaults to last frame)"),
+      exact_path: z
+        .string()
+        .optional()
+        .describe("Exact absolute .png file path for 'spritesheet' mode (e.g. '/path/to/en_shambler_walk.png'), suppressing the '_spritesheet.png' suffix"),
+      exact_filename: z
+        .string()
+        .optional()
+        .describe("Exact .png filename inside 'path' directory for 'spritesheet' mode (e.g. 'en_shambler_walk.png'), suppressing the '_spritesheet.png' suffix"),
+      scale: coerceInt(1, 32)
+        .default(1)
+        .describe("Non-destructive nearest-neighbor upscale multiplier (1..32, default: 1)"),
     },
-    async ({ path, prefix, mode, columns, start_frame, end_frame }) => {
-      let safeDir: string;
-      let safePrefix: string;
+    async ({ path, prefix, mode, columns, tag, start_frame, end_frame, exact_path, exact_filename, scale }) => {
+      const params: Record<string, unknown> = { mode, scale };
       try {
-        safeDir = resolveSafeDirectory(path, "path");
-        safePrefix = sanitizeAssetName(prefix, "prefix");
+        if (exact_path !== undefined && exact_path.trim() !== "") {
+          if (mode !== "spritesheet") {
+            return { content: [{ type: "text" as const, text: "❌ 'exact_path' is only supported when mode is 'spritesheet'." }] };
+          }
+          const normalizedExact = exact_path.toLowerCase().endsWith(".png") ? exact_path : `${exact_path}.png`;
+          params.exact_path = resolveSafeOutputFile(normalizedExact, [".png"], "exact_path");
+        } else {
+          if (!path || path.trim() === "") {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: "❌ Missing 'path' directory parameter (or provide 'exact_path' in spritesheet mode).",
+                },
+              ],
+            };
+          }
+          const safeDir = resolveSafeDirectory(path, "path");
+          params.path = safeDir;
+
+          if (exact_filename !== undefined && exact_filename.trim() !== "") {
+            if (mode !== "spritesheet") {
+              return { content: [{ type: "text" as const, text: "❌ 'exact_filename' is only supported when mode is 'spritesheet'." }] };
+            }
+            const cleanFn = sanitizeAssetName(exact_filename, "exact_filename");
+            const pngName = cleanFn.toLowerCase().endsWith(".png") ? cleanFn : `${cleanFn}.png`;
+            params.exact_path = resolveSafeOutputFile(nodePath.join(safeDir, pngName), [".png"], "exact_filename");
+          } else {
+            params.prefix = sanitizeAssetName(prefix, "prefix");
+          }
+        }
       } catch (err) {
         return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
       }
 
-      const params: Record<string, unknown> = { path: safeDir, prefix: safePrefix, mode };
       if (columns !== undefined) params.columns = columns;
+      if (tag !== undefined) params.tag = tag;
       if (start_frame !== undefined) params.start_frame = start_frame;
       if (end_frame !== undefined) params.end_frame = end_frame;
 
       const result = await sendCommand("export_animation", params);
       if (result.success && result.data) {
         const d = result.data;
+        const tagNote = d.tag ? `, tag: "${d.tag}"` : "";
+        const rangeNote = d.start_frame !== undefined ? ` [${d.start_frame}..${d.end_frame}${tagNote}]` : "";
+        const scaleNote = d.scale && d.scale > 1 ? `, scale: ${d.scale}x` : "";
         if (d.mode === "spritesheet") {
+          const sizeNote = d.width && d.height ? ` (${d.width}×${d.height}px${scaleNote})` : "";
           return {
             content: [
               {
                 type: "text" as const,
-                text: `✅ Spritesheet exported: ${d.path}\n  ${d.frames} frames, ${d.columns}×${d.rows} grid`,
+                text: `✅ Spritesheet exported: ${d.path}\n  ${d.frames} frames${rangeNote}, ${d.columns}×${d.rows} grid${sizeNote}`,
               },
             ],
           };
@@ -360,7 +465,7 @@ export function registerFrameTools(server: McpServer): void {
           content: [
             {
               type: "text" as const,
-              text: `✅ Frames exported: ${d.count} files\n  ${(d.files as string[]).join("\n  ")}`,
+              text: `✅ Frames exported: ${d.count} files${rangeNote}${scaleNote}\n  ${(d.files as string[]).join("\n  ")}`,
             },
           ],
         };
@@ -510,24 +615,45 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "export_gif",
-    "Render the current project's animation directly to an animated .gif file on disk.",
+    "Render the current project's animation (or a specific tag / frame range) directly to an animated .gif file on disk, with optional crisp nearest-neighbor scaling.",
     {
       path: z.string().describe("Absolute file path to save the .gif file (e.g. '/path/to/animation.gif')"),
+      scale: coerceInt(1, 32)
+        .default(1)
+        .describe("Non-destructive nearest-neighbor upscale multiplier (1..32, e.g. 4 for crisp 4x preview GIFs)"),
+      tag: z
+        .string()
+        .optional()
+        .describe("Optional animation tag name — exports only frames belonging to that tag"),
+      start_frame: coerceInt(0)
+        .optional()
+        .describe("Optional first 0-based frame index to export"),
+      end_frame: coerceInt(0)
+        .optional()
+        .describe("Optional last 0-based frame index to export"),
     },
-    async ({ path }) => {
+    async ({ path, scale, tag, start_frame, end_frame }) => {
       let safePath: string;
       try {
         safePath = resolveSafeOutputFile(path, [".gif"], "path");
       } catch (err) {
         return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
       }
-      const result = await sendCommand("export_gif", { path: safePath });
+      const params: Record<string, unknown> = { path: safePath, scale };
+      if (tag !== undefined) params.tag = tag;
+      if (start_frame !== undefined) params.start_frame = start_frame;
+      if (end_frame !== undefined) params.end_frame = end_frame;
+      const result = await sendCommand("export_gif", params);
+      const d = result.data;
+      const tagNote = d?.tag ? `, tag: "${d.tag}"` : "";
+      const rangeNote = d?.start_frame !== undefined ? ` [${d.start_frame}..${d.end_frame}${tagNote}]` : "";
+      const dimNote = d?.width && d?.height ? `, ${d.width}×${d.height}px (${d.scale ?? scale}x)` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Animated GIF exported to: ${result.data?.path} (${result.data?.frames} frames, ${result.data?.size_bytes ?? ""} bytes)`
+              ? `✅ Animated GIF exported to: ${d?.path} (${d?.frames} frames${rangeNote}${dimNote}, ${d?.size_bytes ?? ""} bytes)`
               : `❌ ${result.error}`,
           },
         ],
@@ -537,24 +663,45 @@ export function registerFrameTools(server: McpServer): void {
 
   server.tool(
     "export_apng",
-    "Render the current project's animation directly to an animated .apng file on disk.",
+    "Render the current project's animation (or a specific tag / frame range) directly to an animated .apng file on disk, with optional crisp nearest-neighbor scaling.",
     {
       path: z.string().describe("Absolute file path to save the .apng file (e.g. '/path/to/animation.apng')"),
+      scale: coerceInt(1, 32)
+        .default(1)
+        .describe("Non-destructive nearest-neighbor upscale multiplier (1..32, default: 1)"),
+      tag: z
+        .string()
+        .optional()
+        .describe("Optional animation tag name — exports only frames belonging to that tag"),
+      start_frame: coerceInt(0)
+        .optional()
+        .describe("Optional first 0-based frame index to export"),
+      end_frame: coerceInt(0)
+        .optional()
+        .describe("Optional last 0-based frame index to export"),
     },
-    async ({ path }) => {
+    async ({ path, scale, tag, start_frame, end_frame }) => {
       let safePath: string;
       try {
         safePath = resolveSafeOutputFile(path, [".apng", ".png"], "path");
       } catch (err) {
         return { content: [{ type: "text" as const, text: `❌ ${err instanceof Error ? err.message : String(err)}` }] };
       }
-      const result = await sendCommand("export_apng", { path: safePath });
+      const params: Record<string, unknown> = { path: safePath, scale };
+      if (tag !== undefined) params.tag = tag;
+      if (start_frame !== undefined) params.start_frame = start_frame;
+      if (end_frame !== undefined) params.end_frame = end_frame;
+      const result = await sendCommand("export_apng", params);
+      const d = result.data;
+      const tagNote = d?.tag ? `, tag: "${d.tag}"` : "";
+      const rangeNote = d?.start_frame !== undefined ? ` [${d.start_frame}..${d.end_frame}${tagNote}]` : "";
+      const dimNote = d?.width && d?.height ? `, ${d.width}×${d.height}px (${d.scale ?? scale}x)` : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Animated APNG exported to: ${result.data?.path} (${result.data?.frames} frames)`
+              ? `✅ Animated APNG exported to: ${d?.path} (${d?.frames} frames${rangeNote}${dimNote})`
               : `❌ ${result.error}`,
           },
         ],

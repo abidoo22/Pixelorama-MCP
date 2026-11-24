@@ -180,6 +180,33 @@ export const layerHandleSchema = z
   .describe("Target layer index (0-based integer), stable layer ID, or layer name (defaults to active layer)");
 
 /**
+ * Array of 0-based frame indices, accepting either a JSON array or a JSON-stringified array.
+ */
+export const framesArraySchema = safeJsonArray(coerceInt(0), 1)
+  .optional()
+  .describe("Optional array of 0-based frame indices to target (e.g. [0, 1, 2])");
+
+/**
+ * Reusable Zod fields for multi-frame targeting (explicit list, inclusive range, animation tag, or all frames).
+ */
+export const frameRangeFields = {
+  frames: framesArraySchema,
+  from_frame: coerceInt(0)
+    .optional()
+    .describe("Optional inclusive start frame index for a range operation (0-based)"),
+  to_frame: coerceInt(0)
+    .optional()
+    .describe("Optional inclusive end frame index for a range operation (0-based)"),
+  tag: z
+    .string()
+    .optional()
+    .describe("Optional animation tag name — targets all frames belonging to that tag"),
+  all_frames: coerceBool()
+    .optional()
+    .describe("If true, targets all frames in the project (0..total-1)"),
+};
+
+/**
  * Maximum elements allowed in a single flat pixel array (~100k pixels in stride 3, ~50k in stride 6).
  * Protects Node.js from V8 heap exhaustion / OOM crashes during giant batch calls.
  */

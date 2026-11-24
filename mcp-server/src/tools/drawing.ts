@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool, safeJsonArray, safePointsArray, layerHandleSchema, fastFlatArraySchema } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, safeJsonArray, safePointsArray, layerHandleSchema, fastFlatArraySchema, frameRangeFields } from "../utils/schema_helpers.js";
 
 export function registerDrawingTools(server: McpServer): void {
   // ── undo ────────────────────────────────────────────────────────────
@@ -188,22 +188,36 @@ export function registerDrawingTools(server: McpServer): void {
   // ── transform_cel ───────────────────────────────────────────────────
   server.tool(
     "transform_cel",
-    "Nudge, translate, or offset all pixels on a cel by (dx, dy). Essential for creating walking/breathing animation frames without redrawing, and for composition adjustments.",
+    "Nudge, translate, or offset all pixels on one or more cels by (dx, dy). Supports single 'frame', explicit 'frames' list, 'from_frame'/'to_frame' range, 'tag', or 'all_frames'.",
     {
       dx: coerceInt().describe("Horizontal shift in pixels (+ right, - left)"),
       dy: coerceInt().describe("Vertical shift in pixels (+ down, - up)"),
       wrap_around: coerceBool().default(false).describe("If true, pixels shifted off one edge wrap to the opposite edge (useful for seamless textures)"),
       layer: layerHandleSchema,
-      frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
+      frame: coerceInt().optional().describe("Optional single target frame index (defaults to active frame when no batch selector is given)"),
+      ...frameRangeFields,
     },
-    async ({ dx, dy, wrap_around, layer, frame }) => {
-      const result = await sendCommand("transform_cel", { dx, dy, wrap_around, layer, frame });
+    async ({ dx, dy, wrap_around, layer, frame, frames, from_frame, to_frame, tag, all_frames }) => {
+      const params: Record<string, unknown> = { dx, dy, wrap_around };
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
+      const result = await sendCommand("transform_cel", params);
+      const count = result.data?.frames_processed ?? 1;
+      const frameLabel =
+        count > 1
+          ? `frames:[${(result.data?.frames as number[]).join(",")}]`
+          : `frame:${result.data?.frame}`;
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `🚀 Cel transformed by (${dx}, ${dy}) — ${result.data?.shifted_pixels ?? 0} pixels shifted [frame:${result.data?.frame}, layer:${result.data?.layer}]`
+              ? `🚀 ${count > 1 ? `${count} cels` : "Cel"} transformed by (${dx}, ${dy}) — ${result.data?.shifted_pixels ?? 0} pixels shifted [${frameLabel}, layer:${result.data?.layer}]`
               : `❌ ${result.error}`,
           },
         ],
@@ -326,7 +340,7 @@ export function registerDrawingTools(server: McpServer): void {
   // ── draw_rect ───────────────────────────────────────────────────────
   server.tool(
     "draw_rect",
-    "Draw a rectangle on the specified cel. Can be filled or outline only.",
+    "Draw a rectangle on the specified cel. Can be filled or outline only, with optional rounded or chamfered corners.",
     {
       x: coerceInt().describe("Top-left X coordinate"),
       y: coerceInt().describe("Top-left Y coordinate"),
@@ -344,10 +358,17 @@ export function registerDrawingTools(server: McpServer): void {
       blend: coerceBool()
         .default(false)
         .describe("If true, alpha-blends with existing pixels instead of overwriting"),
+      corner_radius: coerceInt(0)
+        .default(0)
+        .describe("Corner radius in pixels (0 = sharp rectangle; 1+ = rounded or chamfered corners, clamped to min(width/2, height/2))"),
+      corner_style: z
+        .enum(["round", "chamfer"])
+        .default("round")
+        .describe("Corner geometry when corner_radius > 0: 'round' (pixel-art circular arc) or 'chamfer' (45° diagonal bevel)"),
       layer: layerHandleSchema,
       frame: coerceInt().optional().describe("Optional target frame index (defaults to active frame)"),
     },
-    async ({ x, y, width, height, color, alpha, filled, blend, layer, frame }) => {
+    async ({ x, y, width, height, color, alpha, filled, blend, corner_radius, corner_style, layer, frame }) => {
       const result = await sendCommand("draw_rect", {
         x,
         y,
@@ -357,16 +378,19 @@ export function registerDrawingTools(server: McpServer): void {
         alpha,
         filled,
         blend,
+        corner_radius,
+        corner_style,
         layer,
         frame,
       });
       if (result.success && result.data) {
         const clippedInfo = Number(result.data.pixels_clipped) > 0 ? ` (⚠️ ${result.data.pixels_clipped} px clipped)` : "";
+        const cornerInfo = Number(result.data.corner_radius) > 0 ? `, ${result.data.corner_style} r=${result.data.corner_radius}` : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ Rectangle drawn at (${x},${y}) size ${width}×${height} (${filled ? "filled" : "outline"}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
+              text: `✅ Rectangle drawn at (${x},${y}) size ${width}×${height} (${filled ? "filled" : "outline"}${cornerInfo}) [${result.data.pixels_drawn} px drawn${clippedInfo}] on [frame:${result.data.frame}, layer:${result.data.layer}]`,
             },
           ],
         };

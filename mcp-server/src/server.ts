@@ -18,11 +18,12 @@ import { registerImporterTools } from "./tools/importer.js";
 import { registerProceduralTools } from "./tools/procedural.js";
 import { registerTilemapTools } from "./tools/tilemap.js";
 import { registerGodotExportTools } from "./tools/godot_export.js";
+import { registerBatchTools } from "./tools/batch.js";
 
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "pix-mcp",
-    version: "0.2.3",
+    version: "0.2.4",
   });
 
   // Register all tool groups
@@ -38,8 +39,9 @@ export function createServer(): McpServer {
   registerProceduralTools(server);
   registerTilemapTools(server);
   registerGodotExportTools(server);
+  registerBatchTools(server);
 
-  console.error("[pix-MCP] All 40+ tools registered successfully");
+  console.error("[pix-MCP] All tools registered successfully");
 
   return server;
 }

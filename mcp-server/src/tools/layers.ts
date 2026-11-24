@@ -296,7 +296,7 @@ export function registerLayerTools(server: McpServer): void {
     "Create a new folder/GroupLayer in Pixelorama to organize complex multi-layer character or scene rigs.",
     {
       name: z.string().default("Group").describe("Group folder name"),
-      above_layer: coerceInt(0).optional().describe("Insert above this layer index (defaults to current layer)"),
+      above_layer: layerHandleSchema.describe("Insert above this layer (index, stable ID, or name; defaults to top layer)"),
     },
     async ({ name, above_layer }) => {
       const params: Record<string, unknown> = { name };

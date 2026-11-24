@@ -70,12 +70,16 @@ async function run() {
     return text.includes("Canvas_A") && !text.includes("Canvas_B");
   });
 
-  // Test safety guard: attempt to close the ONLY remaining open canvas
-  const closeOnlyRes = await registered["close_canvas"].handler({});
-  const closeOnlyText = closeOnlyRes?.content?.[0]?.text || "";
-  if (closeOnlyText.includes("Cannot close the only open canvas") || closeOnlyText.startsWith("❌")) {
-    console.log("  🛡️ Safety Guard Verified: close_canvas prevented closing the last remaining canvas!");
+  // Test closing last remaining canvas:
+  // 1) replace_with_blank: false preserves the safety guard
+  const closeBlockedRes = await registered["close_canvas"].handler({ replace_with_blank: false });
+  const closeBlockedText = closeBlockedRes?.content?.[0]?.text || "";
+  if (closeBlockedText.includes("Cannot close the only open canvas") || closeBlockedText.startsWith("❌")) {
+    console.log("  🛡️ Safety Guard Verified: close_canvas(replace_with_blank=false) prevented closing the last remaining canvas!");
   }
+  // 2) default replace_with_blank: true safely replaces the last tab with a fresh blank canvas
+  await test("close_canvas", {});
+  await test("create_canvas", { width: 64, height: 64, name: "Canvas_A_Fresh" });
 
   await test("get_canvas_info", {});
   await test("fit_viewport", {});

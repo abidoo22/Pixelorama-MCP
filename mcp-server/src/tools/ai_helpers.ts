@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt, coerceFloat, coerceBool } from "../utils/schema_helpers.js";
+import { coerceInt, coerceFloat, coerceBool, safeJsonArray, layerHandleSchema, frameRangeFields } from "../utils/schema_helpers.js";
 
 // ── Built-in pixel-art palettes ────────────────────────────────────────────
 const BUILTIN_PALETTES: Record<string, { name: string; description: string; colors: Array<{ role: string; hex: string }> }> = {
@@ -509,32 +509,112 @@ export function registerAiHelperTools(server: McpServer): void {
 
   server.tool(
     "validate_sprite",
-    "Run QA and sanity checks on a sprite or frame: detect enclosed accidental transparent holes, stray orphan pixels, count unique colors, and compute exact content bounding box.",
+    "Run QA and sanity checks on a single cel, an animation tag, or an entire multi-frame strip: detect enclosed accidental transparent holes, stray orphan pixels, count unique colors, compute bounding boxes, and optionally validate every pixel against a named Pixelorama palette (e.g. 'haven_master' or 'active') or explicit allowed_colors list.",
     {
       all_layers: coerceBool()
         .default(false)
-        .describe("If true, composite all layers for analysis; if false, analyze target cel only"),
-      frame: coerceInt().optional().describe("Frame index (defaults to current frame)"),
-      layer: coerceInt().optional().describe("Layer index (defaults to current layer, ignored if all_layers=true)"),
+        .describe("If true, composite all visible layers for analysis; if false, analyze target layer only"),
+      frame: coerceInt().optional().describe("Single frame index (defaults to current frame when no multi-frame selector is given)"),
+      ...frameRangeFields,
+      layer: layerHandleSchema.describe("Target layer index, stable ID, or name (defaults to current layer; ignored if all_layers=true)"),
       check_holes: coerceBool().default(true).describe("Detect transparent holes completely enclosed by solid pixels"),
-      solid_threshold: coerceFloat(0, 1).default(0.5).describe("Alpha threshold (0.0 to 1.0) to treat a pixel as solid boundary for enclosed hole detection. Defaults to 0.5 to avoid false positives on soft alpha vignettes."),
+      solid_threshold: coerceFloat(0, 1).default(0.5).describe("Alpha threshold (0.0 to 1.0) to treat a pixel as solid boundary for enclosed hole detection"),
       check_orphans: coerceBool().default(true).describe("Detect isolated stray pixels floating with no neighbors"),
       orphan_distance: coerceInt(1, 5).default(1).describe("Search distance for stray pixel neighbors"),
+      palette: z
+        .string()
+        .optional()
+        .describe("Optional Pixelorama palette name (e.g. 'haven_master', or 'active' for the currently selected palette) to verify all pixels stay within allowed colors"),
+      allowed_colors: safeJsonArray(z.string(), 1)
+        .optional()
+        .describe("Optional explicit list of allowed hex colors (e.g. ['#1a1020', '#ffffff']) for palette compliance checking"),
+      palette_tolerance: coerceFloat(0, 1)
+        .default(0)
+        .describe("Color distance tolerance for palette compliance (0.0 = exact 8-bit RGB match)"),
+      ignore_alpha_for_palette: coerceBool()
+        .default(true)
+        .describe("If true (default), matches pixel RGB against palette colors regardless of alpha channel"),
     },
-    async ({ all_layers, frame, layer, check_holes, solid_threshold, check_orphans, orphan_distance }) => {
+    async ({
+      all_layers,
+      frame,
+      frames,
+      from_frame,
+      to_frame,
+      tag,
+      all_frames,
+      layer,
+      check_holes,
+      solid_threshold,
+      check_orphans,
+      orphan_distance,
+      palette,
+      allowed_colors,
+      palette_tolerance,
+      ignore_alpha_for_palette,
+    }) => {
       const params: Record<string, unknown> = {
         all_layers,
         check_holes,
         solid_threshold,
         check_orphans,
         orphan_distance,
+        palette_tolerance,
+        ignore_alpha_for_palette,
       };
       if (frame !== undefined) params.frame = frame;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
       if (layer !== undefined) params.layer = layer;
+      if (palette !== undefined) params.palette = palette;
+      if (allowed_colors !== undefined) params.allowed_colors = allowed_colors;
 
       const result = await sendCommand("validate_sprite", params);
       if (result.success && result.data) {
         const d = result.data;
+
+        if (d.multi_frame) {
+          const tagNote = d.tag ? ` (tag: "${d.tag}")` : "";
+          let report = `## 🛡️ Multi-Frame Sprite QA Report [${d.frames_checked} frames${tagNote}, layer:${d.all_layers ? "all" : `${d.layer} ("${d.layer_name}")`}]\n`;
+          report += `- **Frames Checked**: [${(d.frame_indices as number[]).join(", ")}]\n`;
+          report += `- **Empty Frames**: ${(d.empty_frames as number[]).length === 0 ? "✅ None" : `⚠️ [${(d.empty_frames as number[]).join(", ")}]`}\n`;
+          report += `- **Unique Colors (union)**: ${d.union_unique_color_count} (${(d.union_unique_colors as string[]).slice(0, 32).join(", ")}${(d.union_unique_colors as string[]).length > 32 ? ", ..." : ""})\n`;
+          report += `- **Total Enclosed Holes**: ${d.total_holes === 0 ? "✅ 0" : `⚠️ ${d.total_holes}`}\n`;
+          report += `- **Total Stray/Orphan Pixels**: ${d.total_stray_pixels === 0 ? "✅ 0" : `⚠️ ${d.total_stray_pixels}`}\n`;
+
+          if (d.palette_name !== undefined) {
+            if (d.palette_compliant) {
+              report += `- **Palette Compliance ("${d.palette_name}")**: ✅ 100% compliant (0 off-palette pixels)\n`;
+            } else {
+              report += `- **Palette Compliance ("${d.palette_name}")**: ⚠️ ${d.total_off_palette_pixels} off-palette pixel(s) across ${d.off_palette_color_count} color(s):\n`;
+              for (const oc of (d.off_palette_colors as Array<{ color: string; count: number; frames: number[]; sample_coords: number[][] }>).slice(0, 20)) {
+                const samples = oc.sample_coords.map((c) => `f${c[0]}(${c[1]},${c[2]})`).join(", ");
+                report += `  - \`${oc.color}\`: ${oc.count} px on frames [${oc.frames.join(",")}] (samples: ${samples})\n`;
+              }
+            }
+          }
+
+          report += `\n### Per-Frame Breakdown\n`;
+          for (const fr of d.per_frame as Array<Record<string, unknown>>) {
+            if (fr.empty) {
+              report += `- Frame ${fr.frame}: ⚠️ EMPTY\n`;
+              continue;
+            }
+            const b = fr.bounds as { x: number; y: number; width: number; height: number };
+            const issues: string[] = [];
+            if (Number(fr.enclosed_hole_count) > 0) issues.push(`${fr.enclosed_hole_count} hole(s)`);
+            if (Number(fr.stray_pixel_count) > 0) issues.push(`${fr.stray_pixel_count} orphan(s)`);
+            if (fr.palette_compliant === false) issues.push(`${fr.off_palette_pixel_count} off-palette px`);
+            const status = issues.length === 0 ? "✅" : `⚠️ ${issues.join(", ")}`;
+            report += `- Frame ${fr.frame}: ${status} | ${fr.non_transparent_pixels} px | ${fr.unique_color_count} colors | bbox (${b.x},${b.y}) ${b.width}×${b.height}\n`;
+          }
+
+          return { content: [{ type: "text" as const, text: report }] };
+        }
+
         if (d.empty) {
           return {
             content: [
@@ -552,6 +632,18 @@ export function registerAiHelperTools(server: McpServer): void {
         report += `- **Pixels**: ${d.non_transparent_pixels ?? d.total_opaque_pixels} non-transparent (${fullyOpaque} fully opaque, ${semiTrans} semi-transparent)\n`;
         report += `- **Bounding Box**: (${d.bounds.x}, ${d.bounds.y}) size ${d.bounds.width}×${d.bounds.height} (Canvas: ${d.canvas_size.width}×${d.canvas_size.height})\n`;
         report += `- **Unique Colors**: ${d.unique_color_count} (${d.unique_colors.join(", ")})\n`;
+
+        if (d.palette_name !== undefined) {
+          if (d.palette_compliant) {
+            report += `- **Palette Compliance ("${d.palette_name}")**: ✅ 100% compliant (0 off-palette pixels)\n`;
+          } else {
+            report += `- **Palette Compliance ("${d.palette_name}")**: ⚠️ ${d.off_palette_pixel_count} off-palette pixel(s) across ${d.off_palette_color_count} color(s):\n`;
+            for (const oc of (d.off_palette_colors as Array<{ color: string; count: number; sample_coords: number[][] }>).slice(0, 20)) {
+              const samples = oc.sample_coords.map((c) => `(${c[0]},${c[1]})`).join(", ");
+              report += `  - \`${oc.color}\`: ${oc.count} px (samples: ${samples})\n`;
+            }
+          }
+        }
 
         if (d.enclosed_hole_count === 0) {
           report += `- **Enclosed Holes**: ✅ None detected\n`;
@@ -583,6 +675,72 @@ export function registerAiHelperTools(server: McpServer): void {
             },
           ],
         };
+      }
+      return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
+    }
+  );
+
+  // ── get_layer_markers ────────────────────────────────────────────────────
+  server.tool(
+    "get_layer_markers",
+    "Extract all non-transparent pixel coordinates from a specific layer (including HIDDEN layers like 'anchors', 'sockets', or 'hitboxes') across one or all animation frames, grouped by hex color as { frame: { '#rrggbb': [[x, y], ...] } }. Eliminates having to unpack .pxo ZIP files manually.",
+    {
+      layer: layerHandleSchema.describe("Target layer index, stable ID, or name (works on hidden layers too, e.g. 'anchors')"),
+      frame: coerceInt(0).optional().describe("Optional single frame index (if omitted along with range/tag options, scans ALL frames)"),
+      ...frameRangeFields,
+      include_alpha: coerceBool().default(false).describe("If true, formats hex keys as #rrggbbaa instead of #rrggbb"),
+      include_empty_frames: coerceBool().default(false).describe("If true, includes empty {} entries for frames with no markers"),
+      min_alpha: coerceFloat(0, 1).default(0.01).describe("Minimum alpha value (0.0..1.0) to include a pixel as a marker"),
+      colors: safeJsonArray(z.string(), 1)
+        .optional()
+        .describe("Optional filter list of hex colors to return (e.g. ['#ff00ff', '#00ffff'])"),
+      max_pixels_per_frame: coerceInt(1, 65536)
+        .default(4096)
+        .describe("Safety cap on maximum marker pixels returned per frame (default: 4096)"),
+    },
+    async ({
+      layer,
+      frame,
+      frames,
+      from_frame,
+      to_frame,
+      tag,
+      all_frames,
+      include_alpha,
+      include_empty_frames,
+      min_alpha,
+      colors,
+      max_pixels_per_frame,
+    }) => {
+      const params: Record<string, unknown> = {
+        include_alpha,
+        include_empty_frames,
+        min_alpha,
+        max_pixels_per_frame,
+      };
+      if (layer !== undefined) params.layer = layer;
+      if (frame !== undefined) params.frame = frame;
+      if (frames !== undefined) params.frames = frames;
+      if (from_frame !== undefined) params.from_frame = from_frame;
+      if (to_frame !== undefined) params.to_frame = to_frame;
+      if (tag !== undefined) params.tag = tag;
+      if (all_frames !== undefined) params.all_frames = all_frames;
+      if (colors !== undefined) params.colors = colors;
+
+      const result = await sendCommand("get_layer_markers", params);
+      if (result.success && result.data) {
+        const d = result.data;
+        const visLabel = d.visible ? "visible" : "hidden";
+        const truncNote =
+          Array.isArray(d.truncated_frames) && d.truncated_frames.length > 0
+            ? `\n⚠️ Truncated frames (hit max_pixels_per_frame=${max_pixels_per_frame}): [${(d.truncated_frames as number[]).join(", ")}]`
+            : "";
+        const text =
+          `📍 Layer Markers for [${d.layer}] "${d.layer_name}" (${visLabel}) — ${d.total_markers} marker pixel(s) across ${(d.frames_scanned as number[]).length} frame(s)${truncNote}\n` +
+          "```json\n" +
+          JSON.stringify(d.markers, null, 2) +
+          "\n```";
+        return { content: [{ type: "text" as const, text }] };
       }
       return { content: [{ type: "text" as const, text: `❌ ${result.error}` }] };
     }

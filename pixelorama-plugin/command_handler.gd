@@ -59,6 +59,7 @@ func _register_tools() -> void:
 	_tool_registry["draw_text"] = Callable(self, "_cmd_draw_text")
 	_tool_registry["fill_area"] = Callable(self, "_cmd_fill_area")
 	_tool_registry["apply_outline"] = Callable(self, "_cmd_apply_outline")
+	_tool_registry["apply_dithering"] = Callable(self, "_cmd_apply_dithering")
 	_tool_registry["apply_drop_shadow"] = Callable(self, "_cmd_apply_drop_shadow")
 	_tool_registry["apply_glow"] = Callable(self, "_cmd_apply_glow")
 	_tool_registry["apply_gradient"] = Callable(self, "_cmd_apply_gradient")
@@ -67,11 +68,13 @@ func _register_tools() -> void:
 	_tool_registry["transform_cel"] = Callable(self, "_cmd_transform_cel")
 	_tool_registry["rotate_cel"] = Callable(self, "_cmd_rotate_cel")
 	_tool_registry["eval_gdscript"] = Callable(self, "_cmd_eval_gdscript")
+	_tool_registry["batch_commands"] = Callable(self, "_cmd_batch_commands")
 
 	# Inspection & QA
 	_tool_registry["get_pixel"] = Callable(self, "_cmd_get_pixel")
 	_tool_registry["get_pixels"] = Callable(self, "_cmd_get_pixels")
 	_tool_registry["get_region"] = Callable(self, "_cmd_get_region")
+	_tool_registry["get_layer_markers"] = Callable(self, "_cmd_get_layer_markers")
 	_tool_registry["get_palette_usage"] = Callable(self, "_cmd_get_palette_usage")
 	_tool_registry["clean_isolated_pixels"] = Callable(self, "_cmd_clean_isolated_pixels")
 
@@ -237,6 +240,336 @@ func _get_active_cursor_info(project = null) -> Dictionary:
 		"layer_name": layer_name,
 		"layer_id": layer_id
 	}
+
+
+func _find_animation_tag(project, tag_name: String) -> Dictionary:
+	var target := tag_name.strip_edges()
+	if target.is_empty():
+		return {"error": "Animation tag name must not be empty"}
+	var total: int = project.frames.size()
+	var available: Array[String] = []
+	for tag in project.animation_tags:
+		available.append(str(tag.name))
+		if str(tag.name) == target:
+			var f_from := clampi(int(tag.from) - 1, 0, maxi(0, total - 1))
+			var f_to := clampi(int(tag.to) - 1, f_from, maxi(0, total - 1))
+			return {
+				"error": "",
+				"tag": tag,
+				"name": str(tag.name),
+				"from_frame": f_from,
+				"to_frame": f_to
+			}
+	var avail_str := ", ".join(available) if not available.is_empty() else "(none defined)"
+	return {"error": "Animation tag '%s' not found. Available tags: %s" % [target, avail_str]}
+
+
+func _resolve_frame_range(project, params: Dictionary) -> Dictionary:
+	var total: int = project.frames.size()
+	if total <= 0:
+		return {"error": "Project has no frames"}
+
+	var tag_name := ""
+	if params.has("tag") and params["tag"] != null:
+		tag_name = str(params["tag"]).strip_edges()
+
+	var has_start := params.has("start_frame") and params["start_frame"] != null
+	var has_end := params.has("end_frame") and params["end_frame"] != null
+	if not has_start and params.has("from_frame") and params["from_frame"] != null:
+		has_start = true
+	if not has_end and params.has("to_frame") and params["to_frame"] != null:
+		has_end = true
+
+	var start_frame := 0
+	var end_frame := total - 1
+	var resolved_tag := ""
+
+	if not tag_name.is_empty():
+		if has_start or has_end:
+			return {"error": "Specify either 'tag' or 'start_frame'/'end_frame', not both"}
+		var tag_res := _find_animation_tag(project, tag_name)
+		if tag_res.error != "":
+			return {"error": tag_res.error}
+		start_frame = int(tag_res.from_frame)
+		end_frame = int(tag_res.to_frame)
+		resolved_tag = str(tag_res.name)
+	else:
+		if has_start:
+			start_frame = int(params["start_frame"]) if (params.has("start_frame") and params["start_frame"] != null) else int(params["from_frame"])
+		if has_end:
+			end_frame = int(params["end_frame"]) if (params.has("end_frame") and params["end_frame"] != null) else int(params["to_frame"])
+		if start_frame < 0 or start_frame >= total:
+			return {"error": "start_frame %d out of bounds (0..%d)" % [start_frame, total - 1]}
+		if end_frame < 0 or end_frame >= total:
+			return {"error": "end_frame %d out of bounds (0..%d)" % [end_frame, total - 1]}
+		if start_frame > end_frame:
+			return {"error": "Invalid frame range: start_frame (%d) > end_frame (%d)" % [start_frame, end_frame]}
+
+	var frames: Array[int] = []
+	for i in range(start_frame, end_frame + 1):
+		frames.append(i)
+
+	return {
+		"error": "",
+		"start_frame": start_frame,
+		"end_frame": end_frame,
+		"frames": frames,
+		"count": frames.size(),
+		"tag": resolved_tag
+	}
+
+
+func _resolve_frame_indices(
+	project,
+	params: Dictionary,
+	prefix: String = "",
+	default_all: bool = false,
+	require_explicit: bool = false,
+	single_key_override: String = ""
+) -> Dictionary:
+	var total: int = project.frames.size()
+	if total <= 0:
+		return {"error": "Project has no frames"}
+
+	var all_key := prefix + "all_frames"
+	var tag_key := prefix + "tag"
+	var frames_key := prefix + "frames"
+	var from_key := prefix + "from_frame"
+	var to_key := prefix + "to_frame"
+	var single_key := single_key_override if not single_key_override.is_empty() else (prefix + "frame")
+
+	var frames: Array[int] = []
+	var is_multi := false
+	var resolved_tag := ""
+
+	if params.has(all_key) and bool(params[all_key]):
+		for i in range(total):
+			frames.append(i)
+		is_multi = true
+	elif params.has(tag_key) and params[tag_key] != null and not str(params[tag_key]).strip_edges().is_empty():
+		var tag_res := _find_animation_tag(project, str(params[tag_key]))
+		if tag_res.error != "":
+			return {"error": tag_res.error}
+		for i in range(int(tag_res.from_frame), int(tag_res.to_frame) + 1):
+			frames.append(i)
+		is_multi = true
+		resolved_tag = str(tag_res.name)
+	elif params.has(frames_key) and params[frames_key] != null:
+		var raw_frames = params[frames_key]
+		if not (raw_frames is Array) or raw_frames.is_empty():
+			return {"error": "'%s' must be a non-empty array of frame indices" % frames_key}
+		var seen := {}
+		for item in raw_frames:
+			var fi := int(item)
+			if fi < 0 or fi >= total:
+				return {"error": "Frame index %d in '%s' out of bounds (0..%d)" % [fi, frames_key, total - 1]}
+			if not seen.has(fi):
+				seen[fi] = true
+				frames.append(fi)
+		is_multi = true
+	elif (params.has(from_key) and params[from_key] != null) or (params.has(to_key) and params[to_key] != null):
+		var f_from: int = int(params[from_key]) if (params.has(from_key) and params[from_key] != null) else 0
+		var f_to: int = int(params[to_key]) if (params.has(to_key) and params[to_key] != null) else (total - 1)
+		if f_from < 0 or f_from >= total:
+			return {"error": "%s %d out of bounds (0..%d)" % [from_key, f_from, total - 1]}
+		if f_to < 0 or f_to >= total:
+			return {"error": "%s %d out of bounds (0..%d)" % [to_key, f_to, total - 1]}
+		if f_from > f_to:
+			return {"error": "Invalid frame range: %s (%d) > %s (%d)" % [from_key, f_from, to_key, f_to]}
+		for i in range(f_from, f_to + 1):
+			frames.append(i)
+		is_multi = true
+	elif params.has(single_key) and params[single_key] != null:
+		var fi := int(params[single_key])
+		if fi < 0 or fi >= total:
+			return {"error": "Frame index %d out of bounds (0..%d)" % [fi, total - 1]}
+		frames.append(fi)
+		is_multi = false
+	elif require_explicit:
+		return {"error": "Missing destination frame selector (%s, %s, %s/%s, or %s)" % [single_key, frames_key, from_key, to_key, tag_key]}
+	elif default_all:
+		for i in range(total):
+			frames.append(i)
+		is_multi = true
+	else:
+		frames.append(clampi(project.current_frame, 0, total - 1))
+		is_multi = false
+
+	return {
+		"error": "",
+		"frames": frames,
+		"is_multi": is_multi,
+		"tag": resolved_tag
+	}
+
+
+func _resolve_palette_colors(project, params: Dictionary) -> Dictionary:
+	var pal_name := ""
+	if params.has("palette") and params["palette"] != null:
+		pal_name = str(params["palette"]).strip_edges()
+	var explicit_colors: Array = []
+	if params.has("allowed_colors") and params["allowed_colors"] is Array:
+		explicit_colors = params["allowed_colors"]
+
+	if pal_name.is_empty() and explicit_colors.is_empty():
+		return {"error": "", "enabled": false, "palette_name": "", "colors": [], "rgb_set": {}, "rgba_set": {}}
+
+	var colors: Array[Color] = []
+	var rgb_set := {}
+	var rgba_set := {}
+	var resolved_name := pal_name
+
+	if not pal_name.is_empty():
+		var palettes_autoload = _api.palette.autoload()
+		if palettes_autoload == null:
+			return {"error": "Palettes singleton not available"}
+
+		var found_pal = null
+		var avail_names: Array[String] = []
+
+		if pal_name.to_lower() == "active":
+			found_pal = palettes_autoload.current_palette
+			if found_pal:
+				resolved_name = str(found_pal.name)
+		else:
+			if project and "palettes" in project and project.palettes is Dictionary:
+				for k in project.palettes.keys():
+					var p = project.palettes[k]
+					if p:
+						avail_names.append(str(p.name))
+						if str(p.name) == pal_name or str(k) == pal_name:
+							found_pal = p
+							resolved_name = str(p.name)
+							break
+			if found_pal == null and "palettes" in palettes_autoload and palettes_autoload.palettes is Dictionary:
+				for k in palettes_autoload.palettes.keys():
+					var p = palettes_autoload.palettes[k]
+					if p:
+						if not (str(p.name) in avail_names):
+							avail_names.append(str(p.name))
+						if str(p.name) == pal_name or str(k) == pal_name:
+							found_pal = p
+							resolved_name = str(p.name)
+							break
+
+		if found_pal == null:
+			var avail_str := ", ".join(avail_names) if not avail_names.is_empty() else "(none)"
+			return {"error": "Palette '%s' not found. Available palettes: %s" % [pal_name, avail_str]}
+
+		for swatch in found_pal.colors.values():
+			if swatch != null and "color" in swatch:
+				var c: Color = swatch.color
+				colors.append(c)
+				var rgb_key := (c.r8 << 16) | (c.g8 << 8) | c.b8
+				var rgba_key := (c.r8 << 24) | (c.g8 << 16) | (c.b8 << 8) | c.a8
+				rgb_set[rgb_key] = true
+				rgba_set[rgba_key] = true
+
+	for raw_hex in explicit_colors:
+		var hs := str(raw_hex).strip_edges()
+		if Color.html_is_valid(hs):
+			var c := Color.html(hs)
+			colors.append(c)
+			var rgb_key := (c.r8 << 16) | (c.g8 << 8) | c.b8
+			var rgba_key := (c.r8 << 24) | (c.g8 << 16) | (c.b8 << 8) | c.a8
+			rgb_set[rgb_key] = true
+			rgba_set[rgba_key] = true
+
+	if colors.is_empty():
+		return {"error": "Resolved palette '%s' contains 0 valid colors" % resolved_name}
+
+	return {
+		"error": "",
+		"enabled": true,
+		"palette_name": resolved_name if not resolved_name.is_empty() else "custom",
+		"colors": colors,
+		"rgb_set": rgb_set,
+		"rgba_set": rgba_set
+	}
+
+
+func _rasterize_ellipse_bounds(bx0: int, by0: int, bx1: int, by1: int) -> Dictionary:
+	## Zingl integer Bresenham ellipse over inclusive bounding box [bx0..bx1] x [by0..by1].
+	## Produces flat cardinal caps with zero 1px N/S/E/W pole nubs and deduplicated outline points.
+	var x0 := mini(bx0, bx1)
+	var x1 := maxi(bx0, bx1)
+	var y0 := mini(by0, by1)
+	var y1 := maxi(by0, by1)
+
+	var outline: Array[Vector2i] = []
+	var seen := {}
+	var row_min := {}
+	var row_max := {}
+
+	var plot := func(px: int, py: int) -> void:
+		var pt := Vector2i(px, py)
+		if not seen.has(pt):
+			seen[pt] = true
+			outline.append(pt)
+		if not row_min.has(py) or px < int(row_min[py]):
+			row_min[py] = px
+		if not row_max.has(py) or px > int(row_max[py]):
+			row_max[py] = px
+
+	var a := x1 - x0
+	var b := y1 - y0
+
+	if a == 0:
+		for py in range(y0, y1 + 1):
+			plot.call(x0, py)
+		return {"outline": outline, "row_min": row_min, "row_max": row_max, "min_y": y0, "max_y": y1}
+	if b == 0:
+		for px in range(x0, x1 + 1):
+			plot.call(px, y0)
+		return {"outline": outline, "row_min": row_min, "row_max": row_max, "min_y": y0, "max_y": y1}
+
+	var orig_y0 := y0
+	var orig_y1 := y1
+	var b1 := b & 1
+	var dx: int = 4 * (1 - a) * b * b
+	var dy: int = 4 * (b1 + 1) * a * a
+	var err: int = dx + dy + b1 * a * a
+	var e2: int = 0
+
+	y0 += (b + 1) >> 1
+	y1 = y0 - b1
+	var a_step: int = 8 * a * a
+	var b_step: int = 8 * b * b
+
+	while x0 <= x1:
+		plot.call(x1, y0)
+		plot.call(x0, y0)
+		plot.call(x0, y1)
+		plot.call(x1, y1)
+		e2 = 2 * err
+		if e2 <= dy:
+			y0 += 1
+			y1 -= 1
+			dy += a_step
+			err += dy
+		if e2 >= dx or 2 * err > dy:
+			x0 += 1
+			x1 -= 1
+			dx += b_step
+			err += dx
+
+	while y0 - y1 < b:
+		plot.call(x0 - 1, y0)
+		plot.call(x1 + 1, y0)
+		plot.call(x0 - 1, y1)
+		plot.call(x1 + 1, y1)
+		y0 += 1
+		y1 -= 1
+
+	# Ensure top/bottom pole rows are never missed on 2px-wide tall ellipses (a == 1)
+	if a == 1 and not row_min.has(orig_y0):
+		plot.call(x0 - 1, orig_y0)
+		plot.call(x1 + 1, orig_y0)
+	if a == 1 and not row_min.has(orig_y1):
+		plot.call(x0 - 1, orig_y1)
+		plot.call(x1 + 1, orig_y1)
+
+	return {"outline": outline, "row_min": row_min, "row_max": row_max, "min_y": orig_y0, "max_y": orig_y1}
 
 
 func _get_current_cel():
@@ -766,12 +1099,7 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 	if projects_arr.is_empty():
 		return {"success": false, "error": "No open canvases to close"}
 
-	if projects_arr.size() <= 1:
-		return {
-			"success": false,
-			"error": "Cannot close the only open canvas. Open or create another canvas before closing this one."
-		}
-
+	var replace_with_blank: bool = bool(params.get("replace_with_blank", true))
 	var cur_idx: int = int(global.current_project_index) if "current_project_index" in global else 0
 	var target_index: int = int(params.get("index", cur_idx))
 	if target_index < 0 or target_index >= projects_arr.size():
@@ -780,24 +1108,38 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 			"error": "Canvas index %d out of bounds (0..%d)" % [target_index, projects_arr.size() - 1]
 		}
 
-	var closed_name = projects_arr[target_index].name
-
-	# Remove project from projects array
-	projects_arr.remove_at(target_index)
-
-	# Remove UI tab only if tab_count is still greater than projects count
-	if "tabs" in global and global.tabs and global.tabs.tab_count > projects_arr.size():
-		if target_index < global.tabs.tab_count:
-			global.tabs.remove_tab(target_index)
-
-	if projects_arr.is_empty():
+	var replaced_with_blank := false
+	if projects_arr.size() <= 1:
+		if not replace_with_blank:
+			return {
+				"success": false,
+				"error": "Cannot close the only open canvas. Open or create another canvas before closing this one, or pass replace_with_blank=true."
+			}
+		# Create replacement blank canvas BEFORE removing the last project so Pixelorama never has 0 tabs
 		var fallback_frames: Array = []
 		var fallback_frame_script = load("res://src/Classes/Frame.gd")
 		if fallback_frame_script:
 			fallback_frames = Array([], TYPE_OBJECT, "RefCounted", fallback_frame_script)
-		_api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
+		var blank_proj = _api.project.new_project(fallback_frames, "untitled", Vector2(64, 64), Color.TRANSPARENT)
+		if blank_proj == null:
+			return {"success": false, "error": "Failed to create blank replacement canvas before closing last tab"}
+		replaced_with_blank = true
+
+	var old_project = projects_arr[target_index]
+	var closed_name: String = str(old_project.name)
+
+	# Remove UI tab cleanly before freeing project
+	if "tabs" in global and global.tabs and target_index < global.tabs.tab_count:
+		global.tabs.remove_tab(target_index)
+
+	# Cleanly remove project (freeing undo_redo and layer references when supported)
+	if old_project != null and old_project.has_method("remove"):
+		old_project.remove()
 	else:
-		var next_index = clampi(target_index, 0, projects_arr.size() - 1)
+		projects_arr.remove_at(target_index)
+
+	var next_index = clampi(target_index, 0, maxi(0, projects_arr.size() - 1))
+	if not projects_arr.is_empty():
 		if "current_project_index" in global:
 			global.current_project_index = next_index
 		if "tabs" in global and global.tabs and global.tabs.tab_count > next_index:
@@ -806,6 +1148,12 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 
 	var remaining_count: int = global.projects.size()
 	var new_active_index: int = int(global.current_project_index) if "current_project_index" in global else 0
+	var active_name: String = str(projects_arr[new_active_index].name) if (new_active_index >= 0 and new_active_index < projects_arr.size()) else ""
+
+	var canvas = _api.general.get_canvas()
+	if canvas:
+		canvas.set("update_all_layers", true)
+		canvas.queue_redraw()
 
 	return {
 		"success": true,
@@ -814,7 +1162,13 @@ func _cmd_close_canvas(params: Dictionary) -> Dictionary:
 			"closed_name": closed_name,
 			"remaining_canvases": remaining_count,
 			"active_index": new_active_index,
-			"message": "Closed canvas [%d] '%s'" % [target_index, closed_name]
+			"active_name": active_name,
+			"replaced_with_blank": replaced_with_blank,
+			"message": "Closed canvas [%d] '%s'%s" % [
+				target_index,
+				closed_name,
+				" (replaced with fresh blank 'untitled' canvas)" if replaced_with_blank else ""
+			]
 		}
 	}
 
@@ -1561,42 +1915,109 @@ func _cmd_draw_rect(params: Dictionary) -> Dictionary:
 	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
 	var blend: bool = bool(params.get("blend", false))
+	var max_r: int = mini(width >> 1, height >> 1)
+	var corner_radius: int = clampi(int(params.get("corner_radius", 0)), 0, max_r)
+	var corner_style: String = str(params.get("corner_style", "round")).to_lower()
 
 	var img_w := image.get_width()
 	var img_h := image.get_height()
 	var drawn := 0
 	var total := 0
 
-	if filled:
-		total = width * height
-		var clamped := Rect2i(x, y, width, height).intersection(Rect2i(0, 0, img_w, img_h))
-		if clamped.has_area():
-			if blend and color.a < 1.0:
-				for py in range(clamped.position.y, clamped.end.y):
-					for px in range(clamped.position.x, clamped.end.x):
-						_put_pixel(image, px, py, color, true)
-			else:
-				image.fill_rect(clamped, color)
-			drawn = clamped.get_area()
+	if corner_radius <= 0:
+		if filled:
+			total = width * height
+			var clamped := Rect2i(x, y, width, height).intersection(Rect2i(0, 0, img_w, img_h))
+			if clamped.has_area():
+				if blend and color.a < 1.0:
+					for py in range(clamped.position.y, clamped.end.y):
+						for px in range(clamped.position.x, clamped.end.x):
+							_put_pixel(image, px, py, color, true)
+				else:
+					image.fill_rect(clamped, color)
+				drawn = clamped.get_area()
+		else:
+			total = width * 2 + maxi(0, height - 2) * 2
+			for px in range(x, x + width):
+				if px >= 0 and px < img_w:
+					if y >= 0 and y < img_h:
+						_put_pixel(image, px, y, color, blend)
+						drawn += 1
+					var bot := y + height - 1
+					if bot >= 0 and bot < img_h and height > 1:
+						_put_pixel(image, px, bot, color, blend)
+						drawn += 1
+			for py in range(y + 1, y + height - 1):
+				if py >= 0 and py < img_h:
+					if x >= 0 and x < img_w:
+						_put_pixel(image, x, py, color, blend)
+						drawn += 1
+					var right := x + width - 1
+					if right >= 0 and right < img_w and width > 1:
+						_put_pixel(image, right, py, color, blend)
+						drawn += 1
 	else:
-		total = width * 2 + maxi(0, height - 2) * 2
-		for px in range(x, x + width):
-			if px >= 0 and px < img_w:
-				if y >= 0 and y < img_h:
-					_put_pixel(image, px, y, color, blend)
+		# Compute symmetrical corner inset for top/bottom corner_radius rows
+		var row_insets: Array[int] = []
+		row_insets.resize(corner_radius)
+		if corner_style == "chamfer":
+			for dy in range(corner_radius):
+				row_insets[dy] = corner_radius - dy
+		else:
+			if corner_radius == 1:
+				row_insets[0] = 1
+			else:
+				var eb := _rasterize_ellipse_bounds(0, 0, 2 * corner_radius, 2 * corner_radius)
+				var rmin: Dictionary = eb.row_min
+				for dy in range(corner_radius):
+					row_insets[dy] = int(rmin.get(dy, 0))
+
+		var get_row_inset := func(row_offset: int) -> int:
+			var dy_edge := mini(row_offset, (height - 1) - row_offset)
+			return row_insets[dy_edge] if dy_edge < corner_radius else 0
+
+		if filled:
+			for row_off in range(height):
+				var py := y + row_off
+				var inset: int = get_row_inset.call(row_off)
+				var lx := x + inset
+				var rx_end := x + width - 1 - inset
+				if rx_end < lx:
+					continue
+				total += (rx_end - lx + 1)
+				if py < 0 or py >= img_h:
+					continue
+				var clx := maxi(lx, 0)
+				var crx := mini(rx_end, img_w - 1)
+				for px in range(clx, crx + 1):
+					_put_pixel(image, px, py, color, blend)
 					drawn += 1
-				var bot := y + height - 1
-				if bot >= 0 and bot < img_h and height > 1:
-					_put_pixel(image, px, bot, color, blend)
-					drawn += 1
-		for py in range(y + 1, y + height - 1):
-			if py >= 0 and py < img_h:
-				if x >= 0 and x < img_w:
-					_put_pixel(image, x, py, color, blend)
-					drawn += 1
-				var right := x + width - 1
-				if right >= 0 and right < img_w and width > 1:
-					_put_pixel(image, right, py, color, blend)
+		else:
+			var outline_seen := {}
+			for row_off in range(height):
+				var py := y + row_off
+				var inset: int = get_row_inset.call(row_off)
+				var lx := x + inset
+				var rx_end := x + width - 1 - inset
+				if rx_end < lx:
+					continue
+				if row_off == 0 or row_off == height - 1:
+					for px in range(lx, rx_end + 1):
+						outline_seen[Vector2i(px, py)] = true
+				else:
+					var outer_row := row_off - 1 if row_off < (height >> 1) else row_off + 1
+					var prev_inset: int = get_row_inset.call(outer_row)
+					var left_span_end := maxi(lx, x + prev_inset - 1)
+					var right_span_start := mini(rx_end, x + width - 1 - prev_inset + 1)
+					for px in range(lx, mini(left_span_end, rx_end) + 1):
+						outline_seen[Vector2i(px, py)] = true
+					for px in range(maxi(right_span_start, lx), rx_end + 1):
+						outline_seen[Vector2i(px, py)] = true
+			total = outline_seen.size()
+			for pt in outline_seen.keys():
+				var pv: Vector2i = pt
+				if pv.x >= 0 and pv.x < img_w and pv.y >= 0 and pv.y < img_h:
+					_put_pixel(image, pv.x, pv.y, color, blend)
 					drawn += 1
 
 	_commit_image_change(image, "Draw Rectangle", target.frame, target.layer)
@@ -1608,6 +2029,8 @@ func _cmd_draw_rect(params: Dictionary) -> Dictionary:
 			"width": width,
 			"height": height,
 			"filled": filled,
+			"corner_radius": corner_radius,
+			"corner_style": corner_style,
 			"pixels_drawn": drawn,
 			"pixels_clipped": maxi(0, total - drawn),
 			"frame": target.frame,
@@ -1794,8 +2217,8 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 	var image: Image = target.image
 	var cx: int = int(params.get("cx", 0))
 	var cy: int = int(params.get("cy", 0))
-	var rx: int = int(params.get("rx", 1))
-	var ry: int = int(params.get("ry", 1))
+	var rx: int = maxi(0, int(params.get("rx", 1)))
+	var ry: int = maxi(0, int(params.get("ry", 1)))
 	var filled: bool = bool(params.get("filled", true))
 	var color := _parse_color(params)
 	var blend: bool = bool(params.get("blend", false))
@@ -1805,25 +2228,28 @@ func _cmd_draw_ellipse(params: Dictionary) -> Dictionary:
 	var drawn := 0
 	var clipped := 0
 
+	var eb := _rasterize_ellipse_bounds(cx - rx, cy - ry, cx + rx, cy + ry)
+
 	if filled:
-		for py in range(cy - ry, cy + ry + 1):
-			for px in range(cx - rx, cx + rx + 1):
-				var nx: float = float(px - cx) / float(rx) if rx > 0 else 0.0
-				var ny: float = float(py - cy) / float(ry) if ry > 0 else 0.0
-				if nx * nx + ny * ny <= 1.0:
-					if px >= 0 and px < img_w and py >= 0 and py < img_h:
-						_put_pixel(image, px, py, color, blend)
-						drawn += 1
-					else:
-						clipped += 1
+		var row_min: Dictionary = eb.row_min
+		var row_max: Dictionary = eb.row_max
+		for py in range(int(eb.min_y), int(eb.max_y) + 1):
+			if not row_min.has(py):
+				continue
+			var lx: int = int(row_min[py])
+			var rx_end: int = int(row_max[py])
+			for px in range(lx, rx_end + 1):
+				if px >= 0 and px < img_w and py >= 0 and py < img_h:
+					_put_pixel(image, px, py, color, blend)
+					drawn += 1
+				else:
+					clipped += 1
 	else:
-		var steps := maxi(maxi(rx, ry) * 8, 32)
-		for i in range(steps):
-			var angle := (float(i) / float(steps)) * TAU
-			var px := cx + roundi(float(rx) * cos(angle))
-			var py := cy + roundi(float(ry) * sin(angle))
-			if px >= 0 and px < img_w and py >= 0 and py < img_h:
-				_put_pixel(image, px, py, color, blend)
+		var outline_pts: Array = eb.outline
+		for pt in outline_pts:
+			var pv: Vector2i = pt
+			if pv.x >= 0 and pv.x < img_w and pv.y >= 0 and pv.y < img_h:
+				_put_pixel(image, pv.x, pv.y, color, blend)
 				drawn += 1
 			else:
 				clipped += 1
@@ -1918,61 +2344,277 @@ func _cmd_fill_area(params: Dictionary) -> Dictionary:
 
 
 func _cmd_apply_outline(params: Dictionary) -> Dictionary:
-	var target := _get_target_cel_and_image(params)
-	if target.error != "":
-		return {"success": false, "error": target.error}
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
 
-	var image: Image = target.image
+	var frame_res := _resolve_frame_indices(project, params)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+
+	var layer_idx: int = _resolve_layer_index(params, project)
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return {"success": false, "error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer", layer_idx)), project.layers.size() - 1]}
+
 	var color := _parse_color(params, "color", Color.BLACK)
-	var thickness: int = int(params.get("thickness", 1))
-	thickness = clampi(thickness, 1, 4)
+	var thickness: int = clampi(int(params.get("thickness", 1)), 1, 4)
 	var inside: bool = bool(params.get("inside", false))
+	var frame_indices: Array = frame_res.frames
+	var total_count := 0
+	var per_frame: Array = []
 
-	var w := image.get_width()
-	var h := image.get_height()
-	var outlined_img := image.duplicate()
-	var count := 0
+	for fi in frame_indices:
+		var cel = project.frames[fi].cels[layer_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, layer_idx]}
 
-	for y in range(h):
-		for x in range(w):
-			var current_alpha := image.get_pixel(x, y).a
-			if inside:
-				if current_alpha > 0.1:
-					var is_border := false
-					for dy in range(-thickness, thickness + 1):
-						for dx in range(-thickness, thickness + 1):
-							if dx == 0 and dy == 0:
-								continue
-							var nx := x + dx
-							var ny := y + dy
-							if nx < 0 or nx >= w or ny < 0 or ny >= h or image.get_pixel(nx, ny).a <= 0.1:
-								is_border = true
+		var image: Image = _cel_to_canvas_image(cel, project)
+		var w := image.get_width()
+		var h := image.get_height()
+		var outlined_img := image.duplicate()
+		var count := 0
+
+		for y in range(h):
+			for x in range(w):
+				var current_alpha := image.get_pixel(x, y).a
+				if inside:
+					if current_alpha > 0.1:
+						var is_border := false
+						for dy in range(-thickness, thickness + 1):
+							for dx in range(-thickness, thickness + 1):
+								if dx == 0 and dy == 0:
+									continue
+								var nx := x + dx
+								var ny := y + dy
+								if nx < 0 or nx >= w or ny < 0 or ny >= h or image.get_pixel(nx, ny).a <= 0.1:
+									is_border = true
+									break
+							if is_border:
 								break
 						if is_border:
-							break
-					if is_border:
-						outlined_img.set_pixel(x, y, color)
-						count += 1
-			else:
-				if current_alpha <= 0.1:
-					var is_border := false
-					for dy in range(-thickness, thickness + 1):
-						for dx in range(-thickness, thickness + 1):
-							if dx == 0 and dy == 0:
-								continue
-							var nx := x + dx
-							var ny := y + dy
-							if nx >= 0 and nx < w and ny >= 0 and ny < h and image.get_pixel(nx, ny).a > 0.1:
-								is_border = true
+							outlined_img.set_pixel(x, y, color)
+							count += 1
+				else:
+					if current_alpha <= 0.1:
+						var is_border := false
+						for dy in range(-thickness, thickness + 1):
+							for dx in range(-thickness, thickness + 1):
+								if dx == 0 and dy == 0:
+									continue
+								var nx := x + dx
+								var ny := y + dy
+								if nx >= 0 and nx < w and ny >= 0 and ny < h and image.get_pixel(nx, ny).a > 0.1:
+									is_border = true
+									break
+							if is_border:
 								break
 						if is_border:
-							break
-					if is_border:
-						outlined_img.set_pixel(x, y, color)
-						count += 1
+							outlined_img.set_pixel(x, y, color)
+							count += 1
 
-	_commit_image_change(outlined_img, "Apply Outline", target.frame, target.layer)
-	return {"success": true, "data": {"outline_pixels": count, "color": color.to_html(), "thickness": thickness, "inside": inside, "frame": target.frame, "layer": target.layer}}
+		_commit_image_change(outlined_img, "Apply Outline", fi, layer_idx)
+		total_count += count
+		per_frame.append({"frame": fi, "outline_pixels": count})
+
+	return {
+		"success": true,
+		"data": {
+			"outline_pixels": total_count,
+			"color": color.to_html(),
+			"thickness": thickness,
+			"inside": inside,
+			"frame": frame_indices[0],
+			"frames": frame_indices,
+			"frames_processed": frame_indices.size(),
+			"per_frame": per_frame,
+			"layer": layer_idx,
+			"layer_name": project.layers[layer_idx].name
+		}
+	}
+
+
+func _cmd_apply_dithering(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var frame_res := _resolve_frame_indices(project, params)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+
+	var layer_idx: int = _resolve_layer_index(params, project)
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return {"success": false, "error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer", layer_idx)), project.layers.size() - 1]}
+
+	var raw_c1 := str(params.get("color1", "")).strip_edges()
+	var raw_c2 := str(params.get("color2", "")).strip_edges()
+	var use_c1 := (not raw_c1.is_empty()) and (raw_c1.to_lower() != "keep")
+	var use_c2 := (not raw_c2.is_empty()) and (raw_c2.to_lower() != "keep")
+
+	if not use_c1 and not use_c2:
+		return {"success": false, "error": "At least one of 'color1' or 'color2' must be a valid hex color (not both omitted/'keep')"}
+
+	var col1 := Color.TRANSPARENT
+	var col2 := Color.TRANSPARENT
+	if use_c1:
+		if raw_c1.to_lower() == "transparent":
+			col1 = Color.TRANSPARENT
+		elif Color.html_is_valid(raw_c1):
+			col1 = Color.html(raw_c1)
+		else:
+			return {"success": false, "error": "Invalid color1 hex: '%s'" % raw_c1}
+	if use_c2:
+		if raw_c2.to_lower() == "transparent":
+			col2 = Color.TRANSPARENT
+		elif Color.html_is_valid(raw_c2):
+			col2 = Color.html(raw_c2)
+		else:
+			return {"success": false, "error": "Invalid color2 hex: '%s'" % raw_c2}
+
+	var pattern: String = str(params.get("pattern", "checker_50")).to_lower()
+	var shape: String = str(params.get("shape", "rect")).to_lower()
+	var within_selection: bool = bool(params.get("within_selection", true))
+	var preserve_alpha: bool = bool(params.get("preserve_alpha", false))
+	var alpha_threshold: float = clampf(float(params.get("alpha_threshold", 0.01)), 0.0, 1.0)
+	var blend: bool = bool(params.get("blend", false))
+
+	var has_sel: bool = within_selection and ("has_selection" in project) and bool(project.has_selection)
+	var sel_map = project.selection_map if (has_sel and ("selection_map" in project)) else null
+	if sel_map == null:
+		has_sel = false
+
+	var canvas_w := int(project.size.x)
+	var canvas_h := int(project.size.y)
+	var has_explicit_rect := (
+		(params.has("x") and params["x"] != null)
+		or (params.has("y") and params["y"] != null)
+		or (params.has("width") and params["width"] != null)
+		or (params.has("height") and params["height"] != null)
+	)
+
+	var rx := 0
+	var ry := 0
+	var rw := canvas_w
+	var rh := canvas_h
+	if has_explicit_rect:
+		rx = int(params.get("x", 0))
+		ry = int(params.get("y", 0))
+		rw = maxi(1, int(params.get("width", canvas_w - rx)))
+		rh = maxi(1, int(params.get("height", canvas_h - ry)))
+	elif has_sel and sel_map.has_method("get_used_rect"):
+		var srect: Rect2i = sel_map.get_used_rect()
+		if srect.has_area():
+			rx = srect.position.x
+			ry = srect.position.y
+			rw = srect.size.x
+			rh = srect.size.y
+
+	var ellipse_row_min := {}
+	var ellipse_row_max := {}
+	if shape == "ellipse":
+		var eb := _rasterize_ellipse_bounds(rx, ry, rx + rw - 1, ry + rh - 1)
+		ellipse_row_min = eb.row_min
+		ellipse_row_max = eb.row_max
+
+	var bayer4 := [
+		[  0.5 / 16.0,  8.5 / 16.0,  2.5 / 16.0, 10.5 / 16.0 ],
+		[ 12.5 / 16.0,  4.5 / 16.0, 14.5 / 16.0,  6.5 / 16.0 ],
+		[  3.5 / 16.0, 11.5 / 16.0,  1.5 / 16.0,  9.5 / 16.0 ],
+		[ 15.5 / 16.0,  7.5 / 16.0, 13.5 / 16.0,  5.5 / 16.0 ]
+	]
+
+	var frame_indices: Array = frame_res.frames
+	var total_drawn := 0
+	var y_start := maxi(0, ry)
+	var y_end := mini(canvas_h, ry + rh)
+	var x_start := maxi(0, rx)
+	var x_end := mini(canvas_w, rx + rw)
+
+	for fi in frame_indices:
+		var cel = project.frames[fi].cels[layer_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, layer_idx]}
+
+		var image: Image = _cel_to_canvas_image(cel, project)
+		var frame_drawn := 0
+
+		for py in range(y_start, y_end):
+			var row_x0 := x_start
+			var row_x1 := x_end
+			if shape == "ellipse":
+				if not ellipse_row_min.has(py):
+					continue
+				row_x0 = maxi(x_start, int(ellipse_row_min[py]))
+				row_x1 = mini(x_end, int(ellipse_row_max[py]) + 1)
+
+			for px in range(row_x0, row_x1):
+				if has_sel:
+					var selected := false
+					if sel_map.has_method("is_pixel_selected"):
+						selected = sel_map.is_pixel_selected(Vector2i(px, py), true, project)
+					else:
+						selected = sel_map.get_pixel(px, py).a > 0.01
+					if not selected:
+						continue
+
+				if preserve_alpha:
+					if image.get_pixel(px, py).a <= alpha_threshold:
+						continue
+
+				var use_second := false
+				match pattern:
+					"checker_50":
+						use_second = posmod(px + py, 2) == 0
+					"light_25":
+						use_second = (posmod(px, 2) == 0) and (posmod(py, 2) == 0)
+					"dense_75":
+						use_second = not ((posmod(px, 2) == 1) and (posmod(py, 2) == 1))
+					"bayer_25":
+						use_second = bayer4[posmod(py, 4)][posmod(px, 4)] < 0.25
+					"bayer_50":
+						use_second = bayer4[posmod(py, 4)][posmod(px, 4)] < 0.50
+					"bayer_75":
+						use_second = bayer4[posmod(py, 4)][posmod(px, 4)] < 0.75
+					"horizontal":
+						use_second = posmod(py, 2) == 0
+					"vertical":
+						use_second = posmod(px, 2) == 0
+					"diagonal":
+						use_second = posmod(px + py, 4) == 0
+					_:
+						use_second = posmod(px + py, 2) == 0
+
+				if use_second:
+					if use_c2:
+						_put_pixel(image, px, py, col2, blend)
+						frame_drawn += 1
+				else:
+					if use_c1:
+						_put_pixel(image, px, py, col1, blend)
+						frame_drawn += 1
+
+		_commit_image_change(image, "Apply Dithering", fi, layer_idx)
+		total_drawn += frame_drawn
+
+	return {
+		"success": true,
+		"data": {
+			"x": rx,
+			"y": ry,
+			"width": rw,
+			"height": rh,
+			"pattern": pattern,
+			"shape": shape,
+			"within_selection": has_sel,
+			"preserve_alpha": preserve_alpha,
+			"pixels_drawn": total_drawn,
+			"frame": frame_indices[0],
+			"frames": frame_indices,
+			"frames_processed": frame_indices.size(),
+			"layer": layer_idx,
+			"layer_name": project.layers[layer_idx].name
+		}
+	}
 
 
 func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
@@ -2022,53 +2664,84 @@ func _cmd_mirror_layer(params: Dictionary) -> Dictionary:
 
 
 func _cmd_transform_cel(params: Dictionary) -> Dictionary:
-	var target := _get_target_cel_and_image(params)
-	if target.error != "":
-		return {"success": false, "error": target.error}
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
 
-	var image: Image = target.image
+	var frame_res := _resolve_frame_indices(project, params)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+
+	var layer_idx: int = _resolve_layer_index(params, project)
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return {"success": false, "error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer", layer_idx)), project.layers.size() - 1]}
+
 	var dx: int = int(params.get("dx", 0))
 	var dy: int = int(params.get("dy", 0))
 	var wrap_around: bool = bool(params.get("wrap_around", false))
-	var cel = target.cel
-	if not wrap_around and cel.has_method("copy_content") and cel.has_method("change_offset"):
-		var content = cel.copy_content()
-		var shifted_count := 0
-		var compact_image: Image = content[0]
-		var used := compact_image.get_used_rect()
-		for py in range(used.position.y, used.end.y):
-			for px in range(used.position.x, used.end.x):
-				if compact_image.get_pixel(px, py).a > 0.001:
-					shifted_count += 1
-		_commit_compact_cel_content(
-			content[0],
-			content[1] + Vector2i(dx, dy),
-			"Transform Cel (%d, %d)" % [dx, dy],
-			target.frame,
-			target.layer
-		)
-		return {"success": true, "data": {"dx": dx, "dy": dy, "wrap_around": false, "shifted_pixels": shifted_count, "frame": target.frame, "layer": target.layer}}
+	var frame_indices: Array = frame_res.frames
+	var total_shifted := 0
 
-	var w := image.get_width()
-	var h := image.get_height()
-	var new_image := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	for fi in frame_indices:
+		var cel = project.frames[fi].cels[layer_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, layer_idx]}
 
-	var shifted_pixels := 0
-	for y in range(h):
-		for x in range(w):
-			var src_px := image.get_pixel(x, y)
-			if src_px.a > 0.001:
-				var nx := x + dx
-				var ny := y + dy
-				if wrap_around:
-					nx = posmod(nx, w)
-					ny = posmod(ny, h)
-				if nx >= 0 and nx < w and ny >= 0 and ny < h:
-					new_image.set_pixel(nx, ny, src_px)
-					shifted_pixels += 1
+		if not wrap_around and cel.has_method("copy_content") and cel.has_method("change_offset"):
+			var content = cel.copy_content()
+			var shifted_count := 0
+			var compact_image: Image = content[0]
+			var used := compact_image.get_used_rect()
+			for py in range(used.position.y, used.end.y):
+				for px in range(used.position.x, used.end.x):
+					if compact_image.get_pixel(px, py).a > 0.001:
+						shifted_count += 1
+			_commit_compact_cel_content(
+				content[0],
+				content[1] + Vector2i(dx, dy),
+				"Transform Cel (%d, %d)" % [dx, dy],
+				fi,
+				layer_idx
+			)
+			total_shifted += shifted_count
+			continue
 
-	_commit_image_change(new_image, "Transform Cel (%d, %d)" % [dx, dy], target.frame, target.layer)
-	return {"success": true, "data": {"dx": dx, "dy": dy, "wrap_around": wrap_around, "shifted_pixels": shifted_pixels, "frame": target.frame, "layer": target.layer}}
+		var image: Image = _cel_to_canvas_image(cel, project)
+		var w := image.get_width()
+		var h := image.get_height()
+		var new_image := Image.create(w, h, false, Image.FORMAT_RGBA8)
+
+		var shifted_pixels := 0
+		for y in range(h):
+			for x in range(w):
+				var src_px := image.get_pixel(x, y)
+				if src_px.a > 0.001:
+					var nx := x + dx
+					var ny := y + dy
+					if wrap_around:
+						nx = posmod(nx, w)
+						ny = posmod(ny, h)
+					if nx >= 0 and nx < w and ny >= 0 and ny < h:
+						new_image.set_pixel(nx, ny, src_px)
+						shifted_pixels += 1
+
+		_commit_image_change(new_image, "Transform Cel (%d, %d)" % [dx, dy], fi, layer_idx)
+		total_shifted += shifted_pixels
+
+	return {
+		"success": true,
+		"data": {
+			"dx": dx,
+			"dy": dy,
+			"wrap_around": wrap_around,
+			"shifted_pixels": total_shifted,
+			"frame": frame_indices[0],
+			"frames": frame_indices,
+			"frames_processed": frame_indices.size(),
+			"layer": layer_idx,
+			"layer_name": project.layers[layer_idx].name
+		}
+	}
 
 
 func _cmd_rotate_cel(params: Dictionary) -> Dictionary:
@@ -2615,16 +3288,71 @@ func _cmd_add_frame(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var after_frame: int = params.get("after_frame", project.current_frame)
+	var after_frame: int = int(params.get("after_frame", project.current_frame))
 	if after_frame < 0 or after_frame >= project.frames.size():
 		return {"success": false, "error": "Invalid after_frame index: %d" % after_frame}
 
-	_api.project.add_new_frame(after_frame)
+	var count: int = clampi(int(params.get("count", 1)), 1, 500)
+	var old_current_frame: int = project.current_frame
+
+	if project.has_method("new_empty_frame") and project.has_method("add_frames") and project.undo_redo != null:
+		var new_frames: Array = []
+		var indices := PackedInt32Array()
+		var new_animation_tags: Array = project.animation_tags.duplicate()
+		for i in range(new_animation_tags.size()):
+			new_animation_tags[i] = new_animation_tags[i].duplicate()
+
+		for k in range(count):
+			var insert_at := after_frame + 1 + k
+			var frame = project.new_empty_frame()
+			for l in range(project.layers.size()):
+				if project.layers[l].new_cels_linked:
+					var prev_cel = project.frames[after_frame].cels[l]
+					if prev_cel.link_set == null:
+						prev_cel.link_set = {"cels": [prev_cel]}
+					elif not prev_cel.link_set.has("cels"):
+						prev_cel.link_set["cels"] = [prev_cel]
+					frame.cels[l].set_content(prev_cel.get_content(), prev_cel.image_texture)
+					frame.cels[l].link_set = prev_cel.link_set
+			new_frames.append(frame)
+			indices.append(insert_at)
+			for tag in new_animation_tags:
+				if insert_at >= tag.from and insert_at <= tag.to:
+					tag.to += 1
+				elif insert_at < tag.from:
+					tag.from += 1
+					tag.to += 1
+
+		var action_name := "Add Frame" if count == 1 else "Add %d Frames" % count
+		project.undo_redo.create_action(action_name)
+		project.undo_redo.add_do_method(project.add_frames.bind(new_frames, indices))
+		project.undo_redo.add_undo_method(project.remove_frames.bind(indices))
+		project.undo_redo.add_do_property(project, "animation_tags", new_animation_tags)
+		project.undo_redo.add_undo_property(project, "animation_tags", project.animation_tags)
+		project.undo_redo.add_do_method(project.change_cel.bind(after_frame + count))
+		project.undo_redo.add_undo_method(project.change_cel.bind(old_current_frame))
+		var global_node = _api.get_node_or_null("/root/Global")
+		if global_node and global_node.has_method("undo_or_redo"):
+			project.undo_redo.add_do_method(global_node.undo_or_redo.bind(false))
+			project.undo_redo.add_undo_method(global_node.undo_or_redo.bind(true))
+		project.undo_redo.commit_action()
+
+		var canvas = _api.general.get_canvas()
+		if canvas:
+			if "project_changed" in canvas:
+				canvas.project_changed = true
+			canvas.set("update_all_layers", true)
+			canvas.queue_redraw()
+	else:
+		for k in range(count):
+			_api.project.add_new_frame(after_frame + k)
 
 	return {
 		"success": true,
 		"data": {
 			"after_frame": after_frame,
+			"count": count,
+			"inserted_range": [after_frame + 1, after_frame + count],
 			"total_frames": project.frames.size(),
 			"active_cursor": _get_active_cursor_info(project)
 		}
@@ -2687,61 +3415,73 @@ func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var src_index: int = params.get("index", project.current_frame)
+	var src_index: int = int(params.get("index", project.current_frame))
 	if src_index < 0 or src_index >= project.frames.size():
 		return {"success": false, "error": "Invalid frame index: %d" % src_index}
 
+	var count: int = clampi(int(params.get("count", 1)), 1, 100)
 	var insert_at: int = src_index + 1
 	var src_frame = project.frames[src_index]
 	var frame_script = src_frame.get_script()
-	var new_frame = frame_script.new() if frame_script else null
-	if new_frame == null:
-		var frame_class = load("res://src/Classes/Frame.gd")
-		if frame_class:
-			new_frame = frame_class.new()
-	if new_frame != null and "duration" in new_frame:
-		new_frame.duration = src_frame.duration
+	var frame_class = load("res://src/Classes/Frame.gd") if frame_script == null else null
 
-	var total_pixels_copied: int = 0
-
+	# Count non-transparent pixels in source frame once
+	var src_pixels := 0
 	for l in range(project.layers.size()):
-		var src_cel = src_frame.cels[l]
-		var new_cel = src_cel.duplicate_cel()
-		if project.layers[l].new_cels_linked:
-			if src_cel.link_set == null:
-				src_cel.link_set = {}
-			new_cel.set_content(src_cel.get_content(), src_cel.image_texture)
-			new_cel.link_set = src_cel.link_set
-		else:
-			new_cel.set_content(src_cel.copy_content())
-
-		if new_cel.get_class_name() == "PixelCel":
-			var img: Image = new_cel.get_image()
+		var sc = src_frame.cels[l]
+		if sc.get_class_name() == "PixelCel":
+			var img: Image = sc.get_image()
 			if img:
-				for y in range(img.get_height()):
-					for x in range(img.get_width()):
+				var used := img.get_used_rect()
+				for y in range(used.position.y, used.end.y):
+					for x in range(used.position.x, used.end.x):
 						if img.get_pixel(x, y).a > 0.01:
-							total_pixels_copied += 1
+							src_pixels += 1
 
-		new_frame.cels.append(new_cel)
-
-	# Animation tags replication
+	var new_frames: Array = []
+	var indices := PackedInt32Array()
 	var new_animation_tags: Array = project.animation_tags.duplicate()
 	for i in new_animation_tags.size():
 		new_animation_tags[i] = new_animation_tags[i].duplicate()
-	for tag in new_animation_tags:
-		if insert_at >= tag.from && insert_at <= tag.to:
-			tag.to += 1
-		elif insert_at < tag.from:
-			tag.from += 1
-			tag.to += 1
 
-	project.undo_redo.create_action("Add Frame")
-	project.undo_redo.add_do_method(project.add_frames.bind([new_frame], [insert_at]))
-	project.undo_redo.add_undo_method(project.remove_frames.bind([insert_at]))
+	for k in range(count):
+		var new_frame = frame_script.new() if frame_script else (frame_class.new() if frame_class else null)
+		if new_frame != null and "duration" in new_frame:
+			new_frame.duration = src_frame.duration
+
+		for l in range(project.layers.size()):
+			var src_cel = src_frame.cels[l]
+			var new_cel = src_cel.duplicate_cel()
+			if project.layers[l].new_cels_linked:
+				if src_cel.link_set == null:
+					src_cel.link_set = {"cels": [src_cel]}
+				elif not src_cel.link_set.has("cels"):
+					src_cel.link_set["cels"] = [src_cel]
+				new_cel.set_content(src_cel.get_content(), src_cel.image_texture)
+				new_cel.link_set = src_cel.link_set
+			else:
+				new_cel.set_content(src_cel.copy_content())
+			new_frame.cels.append(new_cel)
+
+		var target_idx := insert_at + k
+		new_frames.append(new_frame)
+		indices.append(target_idx)
+
+		for tag in new_animation_tags:
+			if target_idx >= tag.from and target_idx <= tag.to:
+				tag.to += 1
+			elif target_idx < tag.from:
+				tag.from += 1
+				tag.to += 1
+
+	var total_pixels_copied := src_pixels * count
+	var action_name := "Add Frame" if count == 1 else "Duplicate Frame (%dx)" % count
+	project.undo_redo.create_action(action_name)
+	project.undo_redo.add_do_method(project.add_frames.bind(new_frames, indices))
+	project.undo_redo.add_undo_method(project.remove_frames.bind(indices))
 	project.undo_redo.add_do_property(project, "animation_tags", new_animation_tags)
 	project.undo_redo.add_undo_property(project, "animation_tags", project.animation_tags)
-	project.undo_redo.add_do_method(project.change_cel.bind(insert_at))
+	project.undo_redo.add_do_method(project.change_cel.bind(insert_at + count - 1))
 	project.undo_redo.add_undo_method(project.change_cel.bind(project.current_frame))
 	var global_node = _api.get_node_or_null("/root/Global")
 	if global_node and global_node.has_method("undo_or_redo"):
@@ -2757,7 +3497,7 @@ func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
 		canvas.queue_redraw()
 
 	var warning := ""
-	if total_pixels_copied == 0:
+	if src_pixels == 0:
 		warning = "Source frame contained 0 colored pixels; new frame has empty cels"
 
 	return {
@@ -2765,6 +3505,8 @@ func _cmd_duplicate_frame(params: Dictionary) -> Dictionary:
 		"data": {
 			"duplicated_from": src_index,
 			"inserted_at": insert_at,
+			"count": count,
+			"inserted_range": [insert_at, insert_at + count - 1],
 			"total_frames": project.frames.size(),
 			"pixels_copied": total_pixels_copied,
 			"warning": warning,
@@ -2778,16 +3520,27 @@ func _cmd_set_frame_duration(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var frame_index: int = params.get("index", project.current_frame)
-	if frame_index < 0 or frame_index >= project.frames.size():
-		return {"success": false, "error": "Invalid frame index: %d" % frame_index}
-
-	var duration: float = params.get("duration", 1.0)
+	var duration: float = float(params.get("duration", 1.0))
 	if duration <= 0.0:
 		return {"success": false, "error": "Duration must be > 0"}
 
-	project.frames[frame_index].duration = duration
-	return {"success": true, "data": {"index": frame_index, "duration": duration}}
+	var frame_res := _resolve_frame_indices(project, params, "", false, false, "index")
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+
+	var frame_indices: Array = frame_res.frames
+	for fi in frame_indices:
+		project.frames[fi].duration = duration
+
+	return {
+		"success": true,
+		"data": {
+			"index": frame_indices[0],
+			"frames": frame_indices,
+			"frames_updated": frame_indices.size(),
+			"duration": duration
+		}
+	}
 
 
 func _cmd_switch_frame(params: Dictionary) -> Dictionary:
@@ -2855,36 +3608,33 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 
 	var src_frame: int = int(params.get("src_frame", project.current_frame))
 	var src_layer: int = -1
-	if params.has("src_layer"):
+	if params.has("src_layer") and params["src_layer"] != null:
 		src_layer = _resolve_layer_index({"layer": params["src_layer"]}, project)
 	else:
 		src_layer = project.current_layer
 
-	var dst_frame: int = int(params.get("dst_frame", -1))
-	var dst_layer: int = -1
-	if params.has("dst_layer"):
+	var dst_layer: int = src_layer
+	if params.has("dst_layer") and params["dst_layer"] != null:
 		dst_layer = _resolve_layer_index({"layer": params["dst_layer"]}, project)
 
-	if dst_frame < 0 or dst_layer < 0:
-		return {"success": false, "error": "dst_frame and dst_layer are required"}
-	if src_frame >= project.frames.size() or dst_frame >= project.frames.size():
-		return {"success": false, "error": "Frame index out of bounds"}
-	if src_layer >= project.layers.size() or dst_layer >= project.layers.size():
-		return {"success": false, "error": "Layer index out of bounds"}
+	if src_frame < 0 or src_frame >= project.frames.size():
+		return {"success": false, "error": "Source frame index out of bounds: %d" % src_frame}
+	if src_layer < 0 or src_layer >= project.layers.size():
+		return {"success": false, "error": "Source layer out of bounds or not found: %s" % str(params.get("src_layer", src_layer))}
+	if dst_layer < 0 or dst_layer >= project.layers.size():
+		return {"success": false, "error": "Destination layer out of bounds or not found: %s" % str(params.get("dst_layer", dst_layer))}
+
+	var dst_res := _resolve_frame_indices(project, params, "dst_", false, true)
+	if dst_res.error != "":
+		return {"success": false, "error": dst_res.error}
+	var dst_frames: Array = dst_res.frames
 
 	var src_cel = project.frames[src_frame].cels[src_layer]
 	if src_cel.get_class_name() != "PixelCel":
 		return {"success": false, "error": "Source cel is not a PixelCel"}
 
-	var dst_cel = project.frames[dst_frame].cels[dst_layer]
-	if dst_cel.get_class_name() != "PixelCel":
-		return {"success": false, "error": "Destination cel is not a PixelCel"}
-
-	# Deep-clone pixels from source to destination
+	# Deep-clone pixels from source once
 	var src_image: Image = src_cel.get_image()
-	var copy_img = Image.create_empty(src_image.get_width(), src_image.get_height(), false, Image.FORMAT_RGBA8)
-	copy_img.copy_from(src_image)
-
 	var used_rect := src_image.get_used_rect()
 	var pixels_copied := 0
 	if used_rect.size.x > 0 and used_rect.size.y > 0:
@@ -2893,13 +3643,21 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 				if src_image.get_pixel(x, y).a > 0.001:
 					pixels_copied += 1
 
-	# Copy the source offset as well as its compact image. Falling back to the
-	# canvas-space helper keeps compatibility with older APIs without offsets.
-	if src_cel.has_method("copy_content") and dst_cel.has_method("change_offset"):
-		var source_content = src_cel.copy_content()
-		_commit_compact_cel_content(source_content[0], source_content[1], "Copy Cel", dst_frame, dst_layer)
-	else:
-		_commit_image_change(copy_img, "Copy Cel", dst_frame, dst_layer)
+	var copied_frames: Array[int] = []
+	for dst_f in dst_frames:
+		var dst_cel = project.frames[dst_f].cels[dst_layer]
+		if dst_cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Destination cel at [frame:%d, layer:%d] is not a PixelCel" % [dst_f, dst_layer]}
+		if dst_f == src_frame and dst_layer == src_layer:
+			continue
+		if src_cel.has_method("copy_content") and dst_cel.has_method("change_offset"):
+			var source_content = src_cel.copy_content()
+			_commit_compact_cel_content(source_content[0], source_content[1], "Copy Cel", dst_f, dst_layer)
+		else:
+			var copy_img = Image.create_empty(src_image.get_width(), src_image.get_height(), false, Image.FORMAT_RGBA8)
+			copy_img.copy_from(src_image)
+			_commit_image_change(copy_img, "Copy Cel", dst_f, dst_layer)
+		copied_frames.append(dst_f)
 
 	var canvas = _api.general.get_canvas()
 	if canvas:
@@ -2912,7 +3670,9 @@ func _cmd_copy_cel(params: Dictionary) -> Dictionary:
 		"src_frame": src_frame,
 		"src_layer": src_layer,
 		"src_layer_id": _get_or_create_layer_id(project.layers[src_layer]),
-		"dst_frame": dst_frame,
+		"dst_frame": dst_frames[0],
+		"dst_frames": copied_frames,
+		"cels_copied": copied_frames.size(),
 		"dst_layer": dst_layer,
 		"dst_layer_id": _get_or_create_layer_id(project.layers[dst_layer]),
 		"pixels_copied": pixels_copied
@@ -2928,29 +3688,99 @@ func _cmd_clear_cel(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var frame_index: int = int(params.get("frame", project.current_frame))
-	var layer_index: int = _resolve_layer_index(params, project)
+	var frame_res := _resolve_frame_indices(project, params)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
 
-	if frame_index < 0 or frame_index >= project.frames.size():
-		return {"success": false, "error": "Invalid frame index: %d" % frame_index}
+	var layer_index: int = _resolve_layer_index(params, project)
 	if layer_index < 0 or layer_index >= project.layers.size():
 		return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params.get("layer", layer_index))}
 
-	var cel = project.frames[frame_index].cels[layer_index]
-	if cel == null or cel.get_class_name() != "PixelCel":
-		return {"success": false, "error": "Target cel is not a PixelCel"}
+	var frame_indices: Array = frame_res.frames
+	for fi in frame_indices:
+		var cel = project.frames[fi].cels[layer_index]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Target cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, layer_index]}
+		var cleared_img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
+		_commit_image_change(cleared_img, "Clear Cel", fi, layer_index)
 
-	var cleared_img := Image.create(int(project.size.x), int(project.size.y), false, Image.FORMAT_RGBA8)
-	_commit_image_change(cleared_img, "Clear Cel", frame_index, layer_index)
 	return {
 		"success": true,
 		"data": {
-			"frame": frame_index,
+			"frame": frame_indices[0],
+			"frames": frame_indices,
+			"frames_cleared": frame_indices.size(),
 			"layer": layer_index,
 			"layer_id": _get_or_create_layer_id(project.layers[layer_index]),
 			"layer_name": project.layers[layer_index].name,
 			"can_undo": true,
-			"message": "Cel cleared successfully (action recorded in undo history)"
+			"message": "Cel(s) cleared successfully (action recorded in undo history)"
+		}
+	}
+
+
+func _cmd_batch_commands(params: Dictionary) -> Dictionary:
+	var ops = params.get("operations", [])
+	if not (ops is Array) or ops.is_empty():
+		return {"success": false, "error": "Missing or empty 'operations' array"}
+	if ops.size() > 200:
+		return {"success": false, "error": "Batch size %d exceeds maximum of 200 operations per call" % ops.size()}
+
+	var stop_on_error: bool = bool(params.get("stop_on_error", true))
+	var results: Array = []
+	var succeeded := 0
+	var failed := 0
+	var stopped_early := false
+
+	for i in range(ops.size()):
+		var op = ops[i]
+		if not (op is Dictionary) or not op.has("tool"):
+			failed += 1
+			results.append({"index": i, "tool": "", "success": false, "error": "Operation must be an object with a 'tool' name"})
+			if stop_on_error:
+				stopped_early = true
+				break
+			continue
+
+		var op_tool := str(op.get("tool", "")).strip_edges()
+		if op_tool == "batch_commands" or op_tool == "eval_gdscript":
+			failed += 1
+			results.append({"index": i, "tool": op_tool, "success": false, "error": "Tool '%s' is not permitted inside batch_commands" % op_tool})
+			if stop_on_error:
+				stopped_early = true
+				break
+			continue
+
+		if not _tool_registry.has(op_tool):
+			failed += 1
+			results.append({"index": i, "tool": op_tool, "success": false, "error": "Unknown tool: %s" % op_tool})
+			if stop_on_error:
+				stopped_early = true
+				break
+			continue
+
+		var op_params: Dictionary = op.get("params", {}) if (op.get("params", {}) is Dictionary) else {}
+		var res: Dictionary = _tool_registry[op_tool].call(op_params)
+		if bool(res.get("success", false)):
+			succeeded += 1
+			results.append({"index": i, "tool": op_tool, "success": true, "data": res.get("data", {})})
+		else:
+			failed += 1
+			results.append({"index": i, "tool": op_tool, "success": false, "error": str(res.get("error", "Unknown error"))})
+			if stop_on_error:
+				stopped_early = true
+				break
+
+	return {
+		"success": failed == 0,
+		"error": "" if failed == 0 else ("Batch completed with %d failure(s) out of %d executed operation(s)" % [failed, results.size()]),
+		"data": {
+			"total_requested": ops.size(),
+			"executed": results.size(),
+			"succeeded": succeeded,
+			"failed": failed,
+			"stopped_early": stopped_early,
+			"results": results
 		}
 	}
 
@@ -2960,56 +3790,116 @@ func _cmd_export_animation(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
-	var dir_path: String = params.get("path", "")
-	if dir_path.is_empty():
-		return {"success": false, "error": "Missing 'path' directory parameter"}
+	var mode: String = str(params.get("mode", "frames"))  # "frames" or "spritesheet"
+	var dir_path: String = str(params.get("path", "")).strip_edges()
+	var exact_path: String = str(params.get("exact_path", "")).strip_edges()
+	var exact_filename: String = str(params.get("exact_filename", "")).strip_edges()
 
-	# Ensure export directory exists
-	if not DirAccess.dir_exists_absolute(dir_path):
-		DirAccess.make_dir_recursive_absolute(dir_path)
+	if mode == "spritesheet" and not exact_path.is_empty():
+		if not exact_path.to_lower().ends_with(".png"):
+			exact_path += ".png"
+		var exact_dir := exact_path.get_base_dir()
+		if not exact_dir.is_empty() and not DirAccess.dir_exists_absolute(exact_dir):
+			DirAccess.make_dir_recursive_absolute(exact_dir)
+	else:
+		if dir_path.is_empty():
+			return {"success": false, "error": "Missing 'path' directory parameter"}
+		if not DirAccess.dir_exists_absolute(dir_path):
+			DirAccess.make_dir_recursive_absolute(dir_path)
 
-	var prefix: String = params.get("prefix", "frame")
-	var mode: String = params.get("mode", "frames")  # "frames" or "spritesheet"
+	var range_res := _resolve_frame_range(project, params)
+	if range_res.error != "":
+		return {"success": false, "error": range_res.error}
+
+	var start_frame: int = int(range_res.start_frame)
+	var end_frame: int = int(range_res.end_frame)
+	var frame_count: int = int(range_res.count)
+	var tag_name: String = str(range_res.tag)
+
+	var prefix: String = str(params.get("prefix", "frame"))
+	var scale_factor: int = clampi(int(params.get("scale", 1)), 1, 32)
 	var drawing_algos = _api.general.get_drawing_algos()
 	var w := int(project.size.x)
 	var h := int(project.size.y)
 	var exported: Array = []
 
 	if mode == "spritesheet":
-		var cols: int = params.get("columns", project.frames.size())
+		var cols: int = int(params.get("columns", frame_count))
 		cols = maxi(1, cols)
-		var rows := ceili(float(project.frames.size()) / float(cols))
+		var rows := ceili(float(frame_count) / float(cols))
 		var sheet := Image.create(w * cols, h * rows, false, Image.FORMAT_RGBA8)
 
-		for i in range(project.frames.size()):
+		for idx in range(frame_count):
+			var src_frame := start_frame + idx
 			var frame_img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-			drawing_algos.blend_layers(frame_img, project.frames[i], Vector2i.ZERO, project)
-			var col := i % cols
-			var row := i / cols
+			if drawing_algos != null:
+				drawing_algos.blend_layers(frame_img, project.frames[src_frame], Vector2i.ZERO, project)
+			else:
+				frame_img = _composite_frame_layers(project, src_frame)
+			var col := idx % cols
+			var row := int(idx / cols)
 			sheet.blit_rect(frame_img, Rect2i(0, 0, w, h), Vector2i(col * w, row * h))
 
-		var sheet_path := dir_path.path_join("%s_spritesheet.png" % prefix)
+		if scale_factor > 1:
+			sheet.resize(sheet.get_width() * scale_factor, sheet.get_height() * scale_factor, Image.INTERPOLATE_NEAREST)
+
+		var sheet_path := ""
+		if not exact_path.is_empty():
+			sheet_path = exact_path
+		elif not exact_filename.is_empty():
+			var fn := exact_filename if exact_filename.to_lower().ends_with(".png") else (exact_filename + ".png")
+			sheet_path = dir_path.path_join(fn)
+		else:
+			sheet_path = dir_path.path_join("%s_spritesheet.png" % prefix)
+
 		var err := sheet.save_png(sheet_path)
 		if err != OK:
 			return {"success": false, "error": "Failed to save spritesheet to '%s': %s" % [sheet_path, error_string(err)]}
-		return {"success": true, "data": {"mode": "spritesheet", "path": sheet_path, "frames": project.frames.size(), "columns": cols, "rows": rows}}
+		return {
+			"success": true,
+			"data": {
+				"mode": "spritesheet",
+				"path": sheet_path,
+				"frames": frame_count,
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"tag": tag_name,
+				"columns": cols,
+				"rows": rows,
+				"scale": scale_factor,
+				"width": sheet.get_width(),
+				"height": sheet.get_height()
+			}
+		}
 	else:
-		# Export individual frames
-		var start_frame: int = params.get("start_frame", 0)
-		var end_frame: int = params.get("end_frame", project.frames.size() - 1)
-		end_frame = clampi(end_frame, 0, project.frames.size() - 1)
-		start_frame = clampi(start_frame, 0, end_frame)
-
 		for i in range(start_frame, end_frame + 1):
 			var frame_img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-			drawing_algos.blend_layers(frame_img, project.frames[i], Vector2i.ZERO, project)
+			if drawing_algos != null:
+				drawing_algos.blend_layers(frame_img, project.frames[i], Vector2i.ZERO, project)
+			else:
+				frame_img = _composite_frame_layers(project, i)
+			if scale_factor > 1:
+				frame_img.resize(w * scale_factor, h * scale_factor, Image.INTERPOLATE_NEAREST)
 			var file_path := dir_path.path_join("%s_%04d.png" % [prefix, i])
 			var err := frame_img.save_png(file_path)
 			if err != OK:
 				return {"success": false, "error": "Failed to save frame %d: %s" % [i, error_string(err)]}
 			exported.append(file_path)
 
-		return {"success": true, "data": {"mode": "frames", "files": exported, "count": exported.size()}}
+		return {
+			"success": true,
+			"data": {
+				"mode": "frames",
+				"files": exported,
+				"count": exported.size(),
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"tag": tag_name,
+				"scale": scale_factor,
+				"width": w * scale_factor,
+				"height": h * scale_factor
+			}
+		}
 
 
 # ─────────────────────────────────────────────
@@ -3346,7 +4236,6 @@ func _cmd_import_spritesheet(params: Dictionary) -> Dictionary:
 	var frame_height: int = int(params.get("frame_height", 32))
 	var start_frame: int = int(params.get("start_frame", 0))
 	var max_frames: int = int(params.get("max_frames", -1))
-	var layer_idx: int = int(params.get("layer", -1))
 
 	if path.is_empty() or not FileAccess.file_exists(path):
 		return {"success": false, "error": "File not found: %s" % path}
@@ -3373,7 +4262,11 @@ func _cmd_import_spritesheet(params: Dictionary) -> Dictionary:
 		project = _api.project.new_project(fallback_frames, path.get_file().get_basename(), Vector2(frame_width, frame_height), Color.TRANSPARENT)
 		_api.project.current_project = project
 
-	var target_layer: int = layer_idx if layer_idx >= 0 else project.current_layer
+	var target_layer: int = project.current_layer
+	if params.has("layer") and params["layer"] != null:
+		target_layer = _resolve_layer_index(params, project)
+		if target_layer < 0 or target_layer >= project.layers.size():
+			return {"success": false, "error": "Invalid layer index or identifier: %s" % str(params["layer"])}
 	target_layer = clampi(target_layer, 0, project.layers.size() - 1)
 
 	var frame_counter := 0
@@ -3621,6 +4514,18 @@ func _cmd_export_gif(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
+	var range_res := _resolve_frame_range(project, params)
+	if range_res.error != "":
+		return {"success": false, "error": range_res.error}
+
+	var start_frame: int = int(range_res.start_frame)
+	var end_frame: int = int(range_res.end_frame)
+	var frame_count: int = int(range_res.count)
+	var tag_name: String = str(range_res.tag)
+	var scale_factor: int = clampi(int(params.get("scale", 1)), 1, 32)
+	var out_w: int = int(project.size.x) * scale_factor
+	var out_h: int = int(project.size.y) * scale_factor
+
 	var dir_name := path.get_base_dir()
 	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
 		DirAccess.make_dir_recursive_absolute(dir_name)
@@ -3629,11 +4534,12 @@ func _cmd_export_gif(params: Dictionary) -> Dictionary:
 	if not GIFExporterClass:
 		return {"success": false, "error": "GIF exporter not supported in this build"}
 
-	var exporter = GIFExporterClass.new(int(project.size.x), int(project.size.y))
-	var total_frames: int = project.frames.size()
+	var exporter = GIFExporterClass.new(out_w, out_h)
 
-	for i in range(total_frames):
-		var frame_img = _blend_frame_layers(project, i)
+	for i in range(start_frame, end_frame + 1):
+		var frame_img: Image = _blend_frame_layers(project, i)
+		if scale_factor > 1:
+			frame_img.resize(out_w, out_h, Image.INTERPOLATE_NEAREST)
 		var duration: float = project.frames[i].duration / maxf(0.1, float(project.fps))
 		var add_err = exporter.add_frame(frame_img, duration, SafeMedianCutQuant)
 		if add_err != 0:
@@ -3651,10 +4557,14 @@ func _cmd_export_gif(params: Dictionary) -> Dictionary:
 			"success": true,
 			"data": {
 				"path": path,
-				"frames": total_frames,
+				"frames": frame_count,
+				"start_frame": start_frame,
+				"end_frame": end_frame,
+				"tag": tag_name,
+				"scale": scale_factor,
 				"size_bytes": file_data.size(),
-				"width": int(project.size.x),
-				"height": int(project.size.y)
+				"width": out_w,
+				"height": out_h
 			}
 		}
 	else:
@@ -3672,22 +4582,32 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 	if project == null:
 		return {"success": false, "error": "No active project"}
 
+	var range_res := _resolve_frame_range(project, params)
+	if range_res.error != "":
+		return {"success": false, "error": range_res.error}
+
+	var start_frame: int = int(range_res.start_frame)
+	var end_frame: int = int(range_res.end_frame)
+	var frame_count: int = int(range_res.count)
+	var tag_name: String = str(range_res.tag)
+	var scale_factor: int = clampi(int(params.get("scale", 1)), 1, 32)
+
 	var dir_name := path.get_base_dir()
 	if dir_name != "" and not DirAccess.dir_exists_absolute(dir_name):
 		DirAccess.make_dir_recursive_absolute(dir_name)
 
-	var frame_count: int = project.frames.size()
 	var apng_stream_script = load("res://addons/aimg_io/apng_stream.gd")
 	if not apng_stream_script:
-		var first_img = _blend_frame_layers(project, 0)
+		var first_img = _blend_frame_layers(project, start_frame)
+		if scale_factor > 1:
+			first_img.resize(first_img.get_width() * scale_factor, first_img.get_height() * scale_factor, Image.INTERPOLATE_NEAREST)
 		var err = first_img.save_png(path)
 		if err == OK:
-			return {"success": true, "data": {"path": path, "frames": 1, "format": "png", "warning": "APNG stream writer not available, saved standard PNG"}}
+			return {"success": true, "data": {"path": path, "frames": 1, "format": "png", "scale": scale_factor, "width": first_img.get_width(), "height": first_img.get_height(), "warning": "APNG stream writer not available, saved standard PNG"}}
 		return {"success": false, "error": "Failed to export APNG to %s" % path}
 
-	var first_frame_img := _blend_frame_layers(project, 0)
-	var w := first_frame_img.get_width()
-	var h := first_frame_img.get_height()
+	var w := int(project.size.x) * scale_factor
+	var h := int(project.size.y) * scale_factor
 	var fps: float = maxf(1.0, float(project.fps))
 
 	var stream = apng_stream_script.new()
@@ -3708,8 +4628,11 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 	stream.write_chunk("acTL", chunk.data_array)
 
 	var sequence := 0
-	for i in range(frame_count):
-		var img := _blend_frame_layers(project, i)
+	for local_idx in range(frame_count):
+		var frame_idx := start_frame + local_idx
+		var img := _blend_frame_layers(project, frame_idx)
+		if scale_factor > 1:
+			img.resize(w, h, Image.INTERPOLATE_NEAREST)
 		img.convert(Image.FORMAT_RGBA8)
 
 		# 3. fcTL (frame control)
@@ -3722,7 +4645,7 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 		chunk.put_32(0) # y offset
 
 		# Frame delay calculation
-		var duration: float = maxf(0.01, project.frames[i].duration)
+		var duration: float = maxf(0.01, project.frames[frame_idx].duration)
 		var den: int = clampi(int(round(fps)), 1, 32767)
 		var num: float = duration * float(den)
 		while num < 16384 and den < 16384:
@@ -3735,9 +4658,9 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 		chunk.put_8(0) # blend_op: 0 (source)
 		stream.write_chunk("fcTL", chunk.data_array)
 
-		# 4. IDAT (frame 0) or fdAT (frames > 0)
+		# 4. IDAT (first exported frame) or fdAT (subsequent frames)
 		chunk = stream.start_chunk()
-		if i != 0:
+		if local_idx != 0:
 			chunk.put_32(sequence)
 			sequence += 1
 
@@ -3750,7 +4673,7 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 		var compressed: PackedByteArray = scanlines.data_array.compress(FileAccess.COMPRESSION_DEFLATE)
 		chunk.put_data(compressed)
 
-		if i == 0:
+		if local_idx == 0:
 			stream.write_chunk("IDAT", chunk.data_array)
 		else:
 			stream.write_chunk("fdAT", chunk.data_array)
@@ -3770,6 +4693,12 @@ func _cmd_export_apng(params: Dictionary) -> Dictionary:
 		"data": {
 			"path": path,
 			"frames": frame_count,
+			"start_frame": start_frame,
+			"end_frame": end_frame,
+			"tag": tag_name,
+			"scale": scale_factor,
+			"width": w,
+			"height": h,
 			"format": "apng",
 			"size_bytes": file_bytes.size()
 		}
@@ -4256,7 +5185,11 @@ func _cmd_create_layer_group(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "No active project"}
 
 	var group_name: String = params.get("name", "Group")
-	var above_layer: int = int(params.get("above_layer", project.layers.size() - 1))
+	var above_layer: int = project.layers.size() - 1
+	if params.has("above_layer") and params["above_layer"] != null:
+		above_layer = _resolve_layer_index({"layer": params["above_layer"]}, project)
+		if above_layer < 0 or above_layer >= project.layers.size():
+			return {"success": false, "error": "Invalid above_layer index or identifier: %s" % str(params["above_layer"])}
 	above_layer = clampi(above_layer, 0, project.layers.size() - 1)
 
 	_api.project.add_new_layer(above_layer, group_name, 1)
@@ -4754,19 +5687,19 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 	if target.error != "":
 		return {"success": false, "error": target.error}
 
-	var text: String = params.get("text", "")
+	var text: String = str(params.get("text", ""))
 	var start_x: int = int(params.get("x", 0))
 	var start_y: int = int(params.get("y", 0))
-	var col_hex: String = params.get("color", "#ffffff")
+	var col_hex: String = str(params.get("color", "#ffffff"))
 	var font_size: int = int(params.get("font_size", 8))
 
 	if text.is_empty():
 		return {"success": false, "error": "Missing 'text' parameter"}
 
 	var effective_scale := 1
-	if params.has("scale"):
-		effective_scale = maxi(1, int(params["scale"]))
-	elif params.has("font_size"):
+	if params.has("scale") and params["scale"] != null:
+		effective_scale = clampi(int(params["scale"]), 1, 8)
+	elif params.has("font_size") and params["font_size"] != null:
 		var fs: int = int(params["font_size"])
 		if fs <= 10:
 			effective_scale = 1
@@ -4779,44 +5712,177 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 		else:
 			effective_scale = maxi(1, int(roundf(float(fs) / 7.0)))
 
+	var letter_spacing: int = clampi(int(params.get("letter_spacing", 1)), 0, 16)
+	var cell_width: int = 0
+	if params.has("cell_width") and params["cell_width"] != null:
+		cell_width = clampi(int(params["cell_width"]), 1, 32)
+
 	var line_step := maxi(7 * effective_scale, font_size)
-
 	var text_col := Color.html(col_hex) if Color.html_is_valid(col_hex) else Color.WHITE
-	var img: Image = target.image
 
-	var cur_x := start_x
-	var cur_y := start_y
+	var has_shadow := false
+	var shadow_col := Color.BLACK
+	var shadow_ox := effective_scale
+	var shadow_oy := effective_scale
+	if params.has("shadow_color") and params["shadow_color"] != null and not str(params["shadow_color"]).strip_edges().is_empty():
+		var sh_hex := str(params["shadow_color"]).strip_edges()
+		if not Color.html_is_valid(sh_hex):
+			return {"success": false, "error": "Invalid shadow_color hex: '%s'" % sh_hex}
+		shadow_col = Color.html(sh_hex)
+		has_shadow = true
+		if params.has("shadow_offset_x") and params["shadow_offset_x"] != null:
+			shadow_ox = int(params["shadow_offset_x"])
+		if params.has("shadow_offset_y") and params["shadow_offset_y"] != null:
+			shadow_oy = int(params["shadow_offset_y"])
+
+	var has_outline := false
+	var outline_col := Color.BLACK
+	var outline_mode: String = str(params.get("outline_mode", "full")).to_lower()
+	if params.has("outline_color") and params["outline_color"] != null and not str(params["outline_color"]).strip_edges().is_empty():
+		var ol_hex := str(params["outline_color"]).strip_edges()
+		if not Color.html_is_valid(ol_hex):
+			return {"success": false, "error": "Invalid outline_color hex: '%s'" % ol_hex}
+		outline_col = Color.html(ol_hex)
+		has_outline = true
+
+	var img: Image = target.image
+	var img_w := img.get_width()
+	var img_h := img.get_height()
+
+	var ink_pixels := {}
+	var outline_pixels := {}
 	var chars_drawn := 0
+	var unsupported_chars := 0
 
 	var min_x := 999999
 	var min_y := 999999
 	var max_x := -999999
 	var max_y := -999999
 	var has_ink := false
+	var max_advance := 0
 
-	for ch in text:
-		if ch == '\n':
-			cur_x = start_x
-			cur_y += line_step
-			continue
+	var outline_dirs: Array[Vector2i] = []
+	if outline_mode == "cardinal":
+		outline_dirs = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	else:
+		outline_dirs = [
+			Vector2i(-1, -1), Vector2i(0, -1), Vector2i(1, -1),
+			Vector2i(-1, 0),                   Vector2i(1, 0),
+			Vector2i(-1, 1),  Vector2i(0, 1),  Vector2i(1, 1)
+		]
 
-		var glyph_matrix = _get_bitmap_glyph(ch)
-		for gy in range(glyph_matrix.size()):
-			for gx in range(glyph_matrix[gy].size()):
-				if glyph_matrix[gy][gx] == 1:
-					for by in range(effective_scale):
-						for bx in range(effective_scale):
-							var px := cur_x + gx * effective_scale + bx
-							var py := cur_y + gy * effective_scale + by
-							if px < min_x: min_x = px
-							if py < min_y: min_y = py
-							if px > max_x: max_x = px
-							if py > max_y: max_y = py
-							has_ink = true
-							if px >= 0 and px < img.get_width() and py >= 0 and py < img.get_height():
-								img.set_pixel(px, py, text_col)
-		cur_x += (glyph_matrix[0].size() + 1) * effective_scale
-		chars_drawn += 1
+	var lines := text.split("\n")
+	var cur_y := start_y
+
+	for line in lines:
+		var cur_tx := 0
+		var line_ink_texels := {}
+
+		for ch in line:
+			var glyph_info := _get_bitmap_glyph_info(ch)
+			var glyph_matrix: Array = glyph_info.matrix
+			if not bool(glyph_info.supported):
+				unsupported_chars += 1
+
+			var glyph_w: int = glyph_matrix[0].size() if glyph_matrix.size() > 0 else 3
+			for gy in range(glyph_matrix.size()):
+				var row: Array = glyph_matrix[gy]
+				for gx in range(row.size()):
+					if row[gx] == 1:
+						line_ink_texels[Vector2i(cur_tx + gx, gy)] = true
+
+			if cell_width > 0:
+				cur_tx += cell_width
+			else:
+				cur_tx += glyph_w + letter_spacing
+			chars_drawn += 1
+
+		var line_advance := cur_tx * effective_scale
+		if line_advance > max_advance:
+			max_advance = line_advance
+
+		for t in line_ink_texels.keys():
+			var tv: Vector2i = t
+			for by in range(effective_scale):
+				for bx in range(effective_scale):
+					var px := start_x + tv.x * effective_scale + bx
+					var py := cur_y + tv.y * effective_scale + by
+					ink_pixels[Vector2i(px, py)] = true
+					if px < min_x: min_x = px
+					if py < min_y: min_y = py
+					if px > max_x: max_x = px
+					if py > max_y: max_y = py
+					has_ink = true
+
+		if has_outline:
+			var line_outline_texels := {}
+			for t in line_ink_texels.keys():
+				var tv: Vector2i = t
+				for d in outline_dirs:
+					var nt := tv + d
+					if not line_ink_texels.has(nt):
+						line_outline_texels[nt] = true
+			for ot in line_outline_texels.keys():
+				var otv: Vector2i = ot
+				for by in range(effective_scale):
+					for bx in range(effective_scale):
+						var px := start_x + otv.x * effective_scale + bx
+						var py := cur_y + otv.y * effective_scale + by
+						outline_pixels[Vector2i(px, py)] = true
+
+		cur_y += line_step
+
+	# Remove any cross-line outline overlap with ink
+	if has_outline:
+		for ip in ink_pixels.keys():
+			outline_pixels.erase(ip)
+
+	var full_min_x := min_x
+	var full_min_y := min_y
+	var full_max_x := max_x
+	var full_max_y := max_y
+	var has_any := has_ink
+
+	# Pass 1: Shadow (back-most)
+	if has_shadow:
+		var shadow_pixels := {}
+		for ip in ink_pixels.keys():
+			var v: Vector2i = ip
+			shadow_pixels[Vector2i(v.x + shadow_ox, v.y + shadow_oy)] = true
+		if has_outline:
+			for op in outline_pixels.keys():
+				var v: Vector2i = op
+				shadow_pixels[Vector2i(v.x + shadow_ox, v.y + shadow_oy)] = true
+		var sh_blend := shadow_col.a < 0.999
+		for sp in shadow_pixels.keys():
+			var v: Vector2i = sp
+			if v.x < full_min_x: full_min_x = v.x
+			if v.y < full_min_y: full_min_y = v.y
+			if v.x > full_max_x: full_max_x = v.x
+			if v.y > full_max_y: full_max_y = v.y
+			has_any = true
+			if v.x >= 0 and v.x < img_w and v.y >= 0 and v.y < img_h:
+				_put_pixel(img, v.x, v.y, shadow_col, sh_blend)
+
+	# Pass 2: Outline (middle)
+	if has_outline:
+		var ol_blend := outline_col.a < 0.999
+		for op in outline_pixels.keys():
+			var v: Vector2i = op
+			if v.x < full_min_x: full_min_x = v.x
+			if v.y < full_min_y: full_min_y = v.y
+			if v.x > full_max_x: full_max_x = v.x
+			if v.y > full_max_y: full_max_y = v.y
+			has_any = true
+			if v.x >= 0 and v.x < img_w and v.y >= 0 and v.y < img_h:
+				_put_pixel(img, v.x, v.y, outline_col, ol_blend)
+
+	# Pass 3: Main text ink (front-most)
+	var text_blend := text_col.a < 0.999
+	for ip in ink_pixels.keys():
+		var v: Vector2i = ip
+		if v.x >= 0 and v.x < img_w and v.y >= 0 and v.y < img_h:
+			_put_pixel(img, v.x, v.y, text_col, text_blend)
 
 	_commit_image_change(img, "Draw Text", target.frame, target.layer)
 
@@ -4827,20 +5893,35 @@ func _cmd_draw_text(params: Dictionary) -> Dictionary:
 		"bottom": max_y if has_ink else start_y,
 		"width": (max_x - min_x + 1) if has_ink else 0,
 		"height": (max_y - min_y + 1) if has_ink else 0,
-		"advance": cur_x - start_x
+		"advance": max_advance
 	}
 
+	var full_bbox := {
+		"left": full_min_x if has_any else start_x,
+		"top": full_min_y if has_any else start_y,
+		"right": full_max_x if has_any else start_x,
+		"bottom": full_max_y if has_any else start_y,
+		"width": (full_max_x - full_min_x + 1) if has_any else 0,
+		"height": (full_max_y - full_min_y + 1) if has_any else 0,
+		"advance": max_advance
+	}
+
+	var default_advance := (cell_width if cell_width > 0 else (4 + letter_spacing)) * effective_scale
 	return {
 		"success": true,
 		"data": {
 			"text": text,
 			"chars_drawn": chars_drawn,
+			"unsupported_chars": unsupported_chars,
 			"scale": effective_scale,
 			"glyph_height": 5 * effective_scale,
-			"char_advance": 5 * effective_scale,
+			"char_advance": default_advance,
 			"line_height": line_step,
 			"pos": [start_x, start_y],
 			"bounding_box": bbox,
+			"full_bounding_box": full_bbox,
+			"has_shadow": has_shadow,
+			"has_outline": has_outline,
 			"frame": target.frame,
 			"layer": target.layer
 		}
@@ -4906,15 +5987,12 @@ func _cmd_get_palette_usage(params: Dictionary) -> Dictionary:
 	}
 
 
-func _cmd_clean_isolated_pixels(_params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+func _cmd_clean_isolated_pixels(params: Dictionary) -> Dictionary:
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
-
+	var img: Image = target.image
 	var w := img.get_width()
 	var h := img.get_height()
 	var cleaned := 0
@@ -4936,15 +6014,15 @@ func _cmd_clean_isolated_pixels(_params: Dictionary) -> Dictionary:
 					cleaned += 1
 
 	if cleaned > 0:
-		_commit_image_change(img, "Clean Isolated Pixels", project.current_frame, project.current_layer)
+		_commit_image_change(img, "Clean Isolated Pixels", target.frame, target.layer)
 
-	return {"success": true, "data": {"isolated_pixels_cleaned": cleaned}}
+	return {"success": true, "data": {"isolated_pixels_cleaned": cleaned, "frame": target.frame, "layer": target.layer}}
 
 
 func _cmd_remap_to_palette(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
+	var target := _get_target_cel_and_image(params)
+	if target.error != "":
+		return {"success": false, "error": target.error}
 
 	var palette_arr: Array = params.get("palette_colors", [])
 	if palette_arr.is_empty():
@@ -4958,9 +6036,7 @@ func _cmd_remap_to_palette(params: Dictionary) -> Dictionary:
 	if colors.is_empty():
 		return {"success": false, "error": "No valid colors in palette_colors"}
 
-	var img = _get_current_image()
-	if img == null:
-		return {"success": false, "error": "No active image"}
+	var img: Image = target.image
 
 	var remapped_count := 0
 	for y in range(img.get_height()):
@@ -4978,9 +6054,9 @@ func _cmd_remap_to_palette(params: Dictionary) -> Dictionary:
 				img.set_pixel(x, y, best_col)
 				remapped_count += 1
 
-	_commit_image_change(img, "Remap to Palette", project.current_frame, project.current_layer)
+	_commit_image_change(img, "Remap to Palette", target.frame, target.layer)
 
-	return {"success": true, "data": {"remapped_pixels": remapped_count, "palette_size": colors.size()}}
+	return {"success": true, "data": {"remapped_pixels": remapped_count, "palette_size": colors.size(), "frame": target.frame, "layer": target.layer}}
 
 
 # ==============================================================================
@@ -5124,115 +6200,181 @@ func _composite_frame_layers(project, frame_idx: int) -> Image:
 	return blended
 
 
+const _ASCII_GLYPHS: Dictionary = {
+	# Uppercase A-Z (5px tall, baseline row 4 — exact backward compatibility)
+	"A": [[0,1,1,0],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]],
+	"B": [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,1],[1,1,1,0]],
+	"C": [[0,1,1,1],[1,0,0,0],[1,0,0,0],[1,0,0,0],[0,1,1,1]],
+	"D": [[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,1,1,0]],
+	"E": [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,1,1,1]],
+	"F": [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,0,0,0]],
+	"G": [[0,1,1,1],[1,0,0,0],[1,0,1,1],[1,0,0,1],[0,1,1,1]],
+	"H": [[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]],
+	"I": [[1,1,1],[0,1,0],[0,1,0],[0,1,0],[1,1,1]],
+	"J": [[0,0,1,1],[0,0,0,1],[0,0,0,1],[1,0,0,1],[0,1,1,0]],
+	"K": [[1,0,0,1],[1,0,1,0],[1,1,0,0],[1,0,1,0],[1,0,0,1]],
+	"L": [[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,1,1,1]],
+	"M": [[1,0,0,0,1],[1,1,0,1,1],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1]],
+	"N": [[1,0,0,1],[1,1,0,1],[1,0,1,1],[1,0,0,1],[1,0,0,1]],
+	"O": [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+	"P": [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,0],[1,0,0,0]],
+	"Q": [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,1,0],[0,1,0,1]],
+	"R": [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,1,0],[1,0,0,1]],
+	"S": [[0,1,1,1],[1,0,0,0],[0,1,1,0],[0,0,0,1],[1,1,1,0]],
+	"T": [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+	"U": [[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+	"V": [[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0],[0,1,0,0]],
+	"W": [[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[1,1,0,1,1],[1,0,0,0,1]],
+	"X": [[1,0,0,1],[0,1,1,0],[0,1,1,0],[1,0,0,1],[1,0,0,1]],
+	"Y": [[1,0,0,1],[0,1,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]],
+	"Z": [[1,1,1,1],[0,0,1,0],[0,1,0,0],[1,0,0,0],[1,1,1,1]],
+
+	# Lowercase a-z (x-height rows 1..4, ascenders rows 0..4, descenders g/j/p/q/y row 5)
+	"a": [[0,0,0,0],[0,1,1,0],[1,0,0,1],[1,0,0,1],[0,1,1,1]],
+	"b": [[1,0,0,0],[1,0,0,0],[1,1,1,0],[1,0,0,1],[1,1,1,0]],
+	"c": [[0,0,0,0],[0,1,1,1],[1,0,0,0],[1,0,0,0],[0,1,1,1]],
+	"d": [[0,0,0,1],[0,0,0,1],[0,1,1,1],[1,0,0,1],[0,1,1,1]],
+	"e": [[0,0,0,0],[0,1,1,0],[1,1,1,1],[1,0,0,0],[0,1,1,1]],
+	"f": [[0,1,1],[1,0,0],[1,1,1],[1,0,0],[1,0,0]],
+	"g": [[0,0,0,0],[0,1,1,1],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+	"h": [[1,0,0,0],[1,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1]],
+	"i": [[1],[0],[1],[1],[1]],
+	"j": [[0,0,1],[0,0,0],[0,0,1],[0,0,1],[0,0,1],[1,1,0]],
+	"k": [[1,0,0],[1,0,0],[1,0,1],[1,1,0],[1,0,1]],
+	"l": [[1,0],[1,0],[1,0],[1,0],[0,1]],
+	"m": [[0,0,0,0,0],[1,1,0,1,1],[1,0,1,0,1],[1,0,1,0,1],[1,0,0,0,1]],
+	"n": [[0,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1]],
+	"o": [[0,0,0,0],[0,1,1,0],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+	"p": [[0,0,0,0],[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,1,1,0],[1,0,0,0]],
+	"q": [[0,0,0,0],[0,1,1,1],[1,0,0,1],[1,0,0,1],[0,1,1,1],[0,0,0,1]],
+	"r": [[0,0,0],[0,1,1],[1,0,0],[1,0,0],[1,0,0]],
+	"s": [[0,0,0,0],[0,1,1,1],[1,1,0,0],[0,0,1,1],[1,1,1,0]],
+	"t": [[0,1,0],[1,1,1],[0,1,0],[0,1,0],[0,0,1]],
+	"u": [[0,0,0,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,1]],
+	"v": [[0,0,0],[1,0,1],[1,0,1],[1,0,1],[0,1,0]],
+	"w": [[0,0,0,0,0],[1,0,0,0,1],[1,0,1,0,1],[1,0,1,0,1],[0,1,0,1,0]],
+	"x": [[0,0,0,0],[1,0,0,1],[0,1,1,0],[0,1,1,0],[1,0,0,1]],
+	"y": [[0,0,0,0],[1,0,0,1],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+	"z": [[0,0,0,0],[1,1,1,1],[0,0,1,0],[0,1,0,0],[1,1,1,1]],
+
+	# Digits 0-9
+	"0": [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]],
+	"1": [[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]],
+	"2": [[1,1,1,0],[0,0,0,1],[0,1,1,0],[1,0,0,0],[1,1,1,1]],
+	"3": [[1,1,1,0],[0,0,0,1],[0,1,1,0],[0,0,0,1],[1,1,1,0]],
+	"4": [[1,0,0,1],[1,0,0,1],[1,1,1,1],[0,0,0,1],[0,0,0,1]],
+	"5": [[1,1,1,1],[1,0,0,0],[1,1,1,0],[0,0,0,1],[1,1,1,0]],
+	"6": [[0,1,1,0],[1,0,0,0],[1,1,1,0],[1,0,0,1],[0,1,1,0]],
+	"7": [[1,1,1,1],[0,0,0,1],[0,0,1,0],[0,1,0,0],[0,1,0,0]],
+	"8": [[0,1,1,0],[1,0,0,1],[0,1,1,0],[1,0,0,1],[0,1,1,0]],
+	"9": [[0,1,1,0],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]],
+
+	# Complete ASCII punctuation & symbols (32..47, 58..64, 91..96, 123..126)
+	" ": [[0,0],[0,0],[0,0],[0,0],[0,0]],
+	"!": [[1],[1],[1],[0],[1]],
+	"\"": [[1,0,1],[1,0,1],[0,0,0],[0,0,0],[0,0,0]],
+	"#": [[0,1,0,1,0],[1,1,1,1,1],[0,1,0,1,0],[1,1,1,1,1],[0,1,0,1,0]],
+	"$": [[0,1,1,1,0],[1,0,1,0,0],[0,1,1,1,0],[0,0,1,0,1],[0,1,1,1,0]],
+	"%": [[1,1,0,0,1],[1,1,0,1,0],[0,0,1,0,0],[0,1,0,1,1],[1,0,0,1,1]],
+	"&": [[0,1,1,0,0],[1,0,0,1,0],[0,1,1,0,0],[1,0,1,0,1],[0,1,1,0,1]],
+	"'": [[1],[1],[0],[0],[0]],
+	"(": [[0,1],[1,0],[1,0],[1,0],[0,1]],
+	")": [[1,0],[0,1],[0,1],[0,1],[1,0]],
+	"*": [[1,0,1],[0,1,0],[1,0,1],[0,0,0],[0,0,0]],
+	"+": [[0,1,0],[0,1,0],[1,1,1],[0,1,0],[0,1,0]],
+	",": [[0,0],[0,0],[0,0],[0,1],[1,0]],
+	"-": [[0,0,0],[0,0,0],[1,1,1],[0,0,0],[0,0,0]],
+	".": [[0],[0],[0],[0],[1]],
+	"/": [[0,0,1],[0,0,1],[0,1,0],[1,0,0],[1,0,0]],
+	":": [[0],[1],[0],[1],[0]],
+	";": [[0,0],[0,1],[0,0],[0,1],[1,0]],
+	"<": [[0,0,1],[0,1,0],[1,0,0],[0,1,0],[0,0,1]],
+	"=": [[0,0,0],[1,1,1],[0,0,0],[1,1,1],[0,0,0]],
+	">": [[1,0,0],[0,1,0],[0,0,1],[0,1,0],[1,0,0]],
+	"?": [[1,1,1],[0,0,1],[0,1,0],[0,0,0],[0,1,0]],
+	"@": [[0,1,1,1,0],[1,0,0,0,1],[1,0,1,1,1],[1,0,1,0,1],[0,1,1,0,0]],
+	"[": [[1,1],[1,0],[1,0],[1,0],[1,1]],
+	"\\": [[1,0,0],[1,0,0],[0,1,0],[0,0,1],[0,0,1]],
+	"]": [[1,1],[0,1],[0,1],[0,1],[1,1]],
+	"^": [[0,1,0],[1,0,1],[0,0,0],[0,0,0],[0,0,0]],
+	"_": [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[1,1,1,1]],
+	"`": [[1,0],[0,1],[0,0],[0,0],[0,0]],
+	"{": [[0,1,1],[0,1,0],[1,1,0],[0,1,0],[0,1,1]],
+	"|": [[1],[1],[1],[1],[1]],
+	"}": [[1,1,0],[0,1,0],[0,1,1],[0,1,0],[1,1,0]],
+	"~": [[0,0,0,0],[0,1,0,1],[1,0,1,0],[0,0,0,0],[0,0,0,0]],
+}
+
+const _FALLBACK_GLYPH: Array = [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]]
+
+
+func _get_bitmap_glyph_info(ch: String) -> Dictionary:
+	if _ASCII_GLYPHS.has(ch):
+		return {"matrix": _ASCII_GLYPHS[ch], "supported": true}
+	return {"matrix": _FALLBACK_GLYPH, "supported": false}
+
+
 func _get_bitmap_glyph(ch: String) -> Array:
-	var c = ch.to_upper()
-	match c:
-		"A": return [[0,1,1,0],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]]
-		"B": return [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,1],[1,1,1,0]]
-		"C": return [[0,1,1,1],[1,0,0,0],[1,0,0,0],[1,0,0,0],[0,1,1,1]]
-		"D": return [[1,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,1,1,0]]
-		"E": return [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,1,1,1]]
-		"F": return [[1,1,1,1],[1,0,0,0],[1,1,1,0],[1,0,0,0],[1,0,0,0]]
-		"G": return [[0,1,1,1],[1,0,0,0],[1,0,1,1],[1,0,0,1],[0,1,1,1]]
-		"H": return [[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,1],[1,0,0,1]]
-		"I": return [[1,1,1],[0,1,0],[0,1,0],[0,1,0],[1,1,1]]
-		"J": return [[0,0,1,1],[0,0,0,1],[0,0,0,1],[1,0,0,1],[0,1,1,0]]
-		"K": return [[1,0,0,1],[1,0,1,0],[1,1,0,0],[1,0,1,0],[1,0,0,1]]
-		"L": return [[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,1,1,1]]
-		"M": return [[1,0,0,0,1],[1,1,0,1,1],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1]]
-		"N": return [[1,0,0,1],[1,1,0,1],[1,0,1,1],[1,0,0,1],[1,0,0,1]]
-		"O": return [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]]
-		"P": return [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,0,0],[1,0,0,0]]
-		"Q": return [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,1,0],[0,1,0,1]]
-		"R": return [[1,1,1,0],[1,0,0,1],[1,1,1,0],[1,0,1,0],[1,0,0,1]]
-		"S": return [[0,1,1,1],[1,0,0,0],[0,1,1,0],[0,0,0,1],[1,1,1,0]]
-		"T": return [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]]
-		"U": return [[1,0,0,1],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]]
-		"V": return [[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0],[0,1,0,0]]
-		"W": return [[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[1,1,0,1,1],[1,0,0,0,1]]
-		"X": return [[1,0,0,1],[0,1,1,0],[0,1,1,0],[1,0,0,1],[1,0,0,1]]
-		"Y": return [[1,0,0,1],[0,1,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]]
-		"Z": return [[1,1,1,1],[0,0,1,0],[0,1,0,0],[1,0,0,0],[1,1,1,1]]
-		"0": return [[0,1,1,0],[1,0,0,1],[1,0,0,1],[1,0,0,1],[0,1,1,0]]
-		"1": return [[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]]
-		"2": return [[1,1,1,0],[0,0,0,1],[0,1,1,0],[1,0,0,0],[1,1,1,1]]
-		"3": return [[1,1,1,0],[0,0,0,1],[0,1,1,0],[0,0,0,1],[1,1,1,0]]
-		"4": return [[1,0,0,1],[1,0,0,1],[1,1,1,1],[0,0,0,1],[0,0,0,1]]
-		"5": return [[1,1,1,1],[1,0,0,0],[1,1,1,0],[0,0,0,1],[1,1,1,0]]
-		"6": return [[0,1,1,0],[1,0,0,0],[1,1,1,0],[1,0,0,1],[0,1,1,0]]
-		"7": return [[1,1,1,1],[0,0,0,1],[0,0,1,0],[0,1,0,0],[0,1,0,0]]
-		"8": return [[0,1,1,0],[1,0,0,1],[0,1,1,0],[1,0,0,1],[0,1,1,0]]
-		"9": return [[0,1,1,0],[1,0,0,1],[0,1,1,1],[0,0,0,1],[0,1,1,0]]
-		" ": return [[0,0],[0,0],[0,0],[0,0],[0,0]]
-		"!": return [[1],[1],[1],[0],[1]]
-		"?": return [[1,1,1],[0,0,1],[0,1,0],[0,0,0],[0,1,0]]
-		".": return [[0],[0],[0],[0],[1]]
-		",": return [[0],[0],[0],[1],[1]]
-		":": return [[0],[1],[0],[1],[0]]
-		"-": return [[0,0,0],[0,0,0],[1,1,1],[0,0,0],[0,0,0]]
-		"+": return [[0,1,0],[0,1,0],[1,1,1],[0,1,0],[0,1,0]]
-		_: return [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]]
+	return _get_bitmap_glyph_info(ch).matrix
 
 
-func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
-	var project = _api.project.current_project
-	if project == null:
-		return {"success": false, "error": "No active project"}
-
-	var all_layers: bool = bool(params.get("all_layers", false))
-	var frame_idx: int = int(params.get("frame", project.current_frame))
-	var check_holes: bool = bool(params.get("check_holes", true))
-	var check_orphans: bool = bool(params.get("check_orphans", true))
-	var orphan_distance: int = int(params.get("orphan_distance", 1))
-	var solid_threshold: float = float(params.get("solid_threshold", 0.5))
-
-	var img: Image = null
-	var target_layer: int = project.current_layer
-	if all_layers:
-		img = _composite_frame_layers(project, frame_idx)
-	else:
-		var target := _get_target_cel_and_image(params)
-		if target.error != "":
-			return {"success": false, "error": target.error}
-		img = target.image
-		target_layer = target.layer
-
-	if img == null:
-		return {"success": false, "error": "No active image to validate"}
-
+func _validate_single_frame_image(
+	img: Image,
+	frame_idx: int,
+	target_layer: int,
+	check_holes: bool,
+	solid_threshold: float,
+	check_orphans: bool,
+	orphan_distance: int,
+	palette_info: Dictionary,
+	palette_tolerance: float,
+	ignore_alpha_for_palette: bool
+) -> Dictionary:
 	var w: int = img.get_width()
 	var h: int = img.get_height()
 	var used_rect := img.get_used_rect()
+	var pal_enabled: bool = bool(palette_info.get("enabled", false))
 
 	if used_rect.size.x == 0 or used_rect.size.y == 0:
-		return {
-			"success": true,
-			"data": {
-				"empty": true,
-				"total_opaque_pixels": 0,
-				"fully_opaque_pixels": 0,
-				"semi_transparent_pixels": 0,
-				"non_transparent_pixels": 0,
-				"unique_color_count": 0,
-				"unique_colors": [],
-				"bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
-				"canvas_size": {"width": w, "height": h},
-				"stray_pixels": [],
-				"stray_pixel_count": 0,
-				"enclosed_holes": [],
-				"enclosed_hole_count": 0,
-				"frame": frame_idx,
-				"layer": target_layer
-			}
+		var empty_res := {
+			"empty": true,
+			"total_opaque_pixels": 0,
+			"fully_opaque_pixels": 0,
+			"semi_transparent_pixels": 0,
+			"non_transparent_pixels": 0,
+			"unique_color_count": 0,
+			"unique_colors": [],
+			"bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
+			"canvas_size": {"width": w, "height": h},
+			"stray_pixels": [],
+			"stray_pixel_count": 0,
+			"enclosed_holes": [],
+			"enclosed_hole_count": 0,
+			"frame": frame_idx,
+			"layer": target_layer
 		}
+		if pal_enabled:
+			empty_res["palette_name"] = str(palette_info.palette_name)
+			empty_res["palette_compliant"] = true
+			empty_res["off_palette_pixel_count"] = 0
+			empty_res["off_palette_color_count"] = 0
+			empty_res["off_palette_colors"] = []
+		return empty_res
 
-	# 1. Color counting & non-transparent pixel classification
+	# 1. Color counting, non-transparent classification, and optional palette validation
 	var color_map := {}
 	var fully_opaque := 0
 	var semi_transparent := 0
 	var total_non_transparent := 0
-	for y in range(h):
-		for x in range(w):
+	var off_palette_map := {}
+	var off_palette_pixel_count := 0
+	var rgb_set: Dictionary = palette_info.get("rgb_set", {})
+	var rgba_set: Dictionary = palette_info.get("rgba_set", {})
+	var pal_colors: Array = palette_info.get("colors", [])
+	var color_in_palette_cache := {}
+
+	for y in range(used_rect.position.y, used_rect.end.y):
+		for x in range(used_rect.position.x, used_rect.end.x):
 			var c := img.get_pixel(x, y)
 			if c.a > 0.05:
 				total_non_transparent += 1
@@ -5242,6 +6384,38 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 					semi_transparent += 1
 				var hex := "#" + c.to_html(c.a < 0.99)
 				color_map[hex] = color_map.get(hex, 0) + 1
+
+				if pal_enabled:
+					var cache_key: int = ((c.r8 << 16) | (c.g8 << 8) | c.b8) if ignore_alpha_for_palette else ((c.r8 << 24) | (c.g8 << 16) | (c.b8 << 8) | c.a8)
+					var matched := false
+					if color_in_palette_cache.has(cache_key):
+						matched = bool(color_in_palette_cache[cache_key])
+					else:
+						if palette_tolerance <= 0.0:
+							matched = rgb_set.has(cache_key) if ignore_alpha_for_palette else rgba_set.has(cache_key)
+						else:
+							for pc in pal_colors:
+								var pcol: Color = pc
+								var dr := c.r - pcol.r
+								var dg := c.g - pcol.g
+								var db := c.b - pcol.b
+								var dist_sq := dr * dr + dg * dg + db * db
+								if not ignore_alpha_for_palette:
+									var da := c.a - pcol.a
+									dist_sq += da * da
+								if sqrt(dist_sq) <= palette_tolerance:
+									matched = true
+									break
+						color_in_palette_cache[cache_key] = matched
+
+					if not matched:
+						off_palette_pixel_count += 1
+						if not off_palette_map.has(hex):
+							off_palette_map[hex] = {"color": hex, "count": 0, "sample_coords": []}
+						off_palette_map[hex]["count"] = int(off_palette_map[hex]["count"]) + 1
+						var samples: Array = off_palette_map[hex]["sample_coords"]
+						if samples.size() < 5:
+							samples.append([x, y])
 
 	# 2. Stray / orphan pixels detection
 	var stray_pixels: Array = []
@@ -5362,29 +6536,220 @@ func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
 						"center": [int((min_x + max_x) / 2.0), int((min_y + max_y) / 2.0)]
 					})
 
+	var res := {
+		"empty": false,
+		"total_opaque_pixels": fully_opaque,
+		"fully_opaque_pixels": fully_opaque,
+		"semi_transparent_pixels": semi_transparent,
+		"non_transparent_pixels": total_non_transparent,
+		"unique_color_count": color_map.size(),
+		"unique_colors": color_map.keys(),
+		"bounds": {
+			"x": used_rect.position.x,
+			"y": used_rect.position.y,
+			"width": used_rect.size.x,
+			"height": used_rect.size.y
+		},
+		"canvas_size": {"width": w, "height": h},
+		"stray_pixels": stray_pixels.slice(0, 50),
+		"stray_pixel_count": stray_pixels.size(),
+		"enclosed_holes": enclosed_holes,
+		"enclosed_hole_count": enclosed_holes.size(),
+		"frame": frame_idx,
+		"layer": target_layer
+	}
+	if pal_enabled:
+		res["palette_name"] = str(palette_info.palette_name)
+		res["palette_compliant"] = off_palette_pixel_count == 0
+		res["off_palette_pixel_count"] = off_palette_pixel_count
+		res["off_palette_color_count"] = off_palette_map.size()
+		res["off_palette_colors"] = off_palette_map.values()
+	return res
+
+
+func _cmd_validate_sprite(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var all_layers: bool = bool(params.get("all_layers", false))
+	var check_holes: bool = bool(params.get("check_holes", true))
+	var check_orphans: bool = bool(params.get("check_orphans", true))
+	var orphan_distance: int = int(params.get("orphan_distance", 1))
+	var solid_threshold: float = float(params.get("solid_threshold", 0.5))
+	var palette_tolerance: float = maxf(0.0, float(params.get("palette_tolerance", 0.0)))
+	var ignore_alpha_for_palette: bool = bool(params.get("ignore_alpha_for_palette", true))
+
+	var palette_info := _resolve_palette_colors(project, params)
+	if palette_info.error != "":
+		return {"success": false, "error": palette_info.error}
+
+	var frame_res := _resolve_frame_indices(project, params)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+	var frame_indices: Array = frame_res.frames
+
+	var target_layer: int = project.current_layer
+	if not all_layers:
+		target_layer = _resolve_layer_index(params, project)
+		if target_layer < 0 or target_layer >= project.layers.size():
+			return {"success": false, "error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer", target_layer)), project.layers.size() - 1]}
+
+	var per_frame: Array = []
+	for fi in frame_indices:
+		var img: Image = null
+		if all_layers:
+			img = _composite_frame_layers(project, fi)
+		else:
+			var cel = project.frames[fi].cels[target_layer]
+			if cel == null or cel.get_class_name() != "PixelCel":
+				return {"success": false, "error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, target_layer]}
+			img = _cel_to_canvas_image(cel, project)
+		if img == null:
+			return {"success": false, "error": "No active image to validate at frame %d" % fi}
+
+		per_frame.append(_validate_single_frame_image(
+			img, fi, target_layer, check_holes, solid_threshold, check_orphans, orphan_distance,
+			palette_info, palette_tolerance, ignore_alpha_for_palette
+		))
+
+	if not bool(frame_res.is_multi):
+		return {"success": true, "data": per_frame[0]}
+
+	var empty_frames: Array[int] = []
+	var total_holes := 0
+	var total_stray := 0
+	var union_colors := {}
+	var total_off_pal_pixels := 0
+	var agg_off_pal := {}
+
+	for fr in per_frame:
+		if bool(fr.empty):
+			empty_frames.append(int(fr.frame))
+		total_holes += int(fr.enclosed_hole_count)
+		total_stray += int(fr.stray_pixel_count)
+		for col_hex in fr.unique_colors:
+			union_colors[col_hex] = true
+		if bool(palette_info.enabled):
+			total_off_pal_pixels += int(fr.get("off_palette_pixel_count", 0))
+			for entry in fr.get("off_palette_colors", []):
+				var ch: String = str(entry.color)
+				if not agg_off_pal.has(ch):
+					agg_off_pal[ch] = {"color": ch, "count": 0, "frames": [], "sample_coords": []}
+				agg_off_pal[ch]["count"] = int(agg_off_pal[ch]["count"]) + int(entry.count)
+				var flist: Array = agg_off_pal[ch]["frames"]
+				if not (int(fr.frame) in flist):
+					flist.append(int(fr.frame))
+				var scoords: Array = agg_off_pal[ch]["sample_coords"]
+				for sc in entry.get("sample_coords", []):
+					if scoords.size() < 5:
+						scoords.append([int(fr.frame), sc[0], sc[1]])
+
+	var agg := {
+		"multi_frame": true,
+		"frames_checked": frame_indices.size(),
+		"frame_indices": frame_indices,
+		"tag": str(frame_res.tag),
+		"all_layers": all_layers,
+		"layer": target_layer,
+		"layer_name": project.layers[target_layer].name if (not all_layers and target_layer >= 0 and target_layer < project.layers.size()) else "all",
+		"empty_frames": empty_frames,
+		"total_holes": total_holes,
+		"total_stray_pixels": total_stray,
+		"union_unique_color_count": union_colors.size(),
+		"union_unique_colors": union_colors.keys(),
+		"per_frame": per_frame
+	}
+	if bool(palette_info.enabled):
+		agg["palette_name"] = str(palette_info.palette_name)
+		agg["palette_compliant"] = total_off_pal_pixels == 0
+		agg["total_off_palette_pixels"] = total_off_pal_pixels
+		agg["off_palette_color_count"] = agg_off_pal.size()
+		agg["off_palette_colors"] = agg_off_pal.values()
+
+	return {"success": true, "data": agg}
+
+
+func _cmd_get_layer_markers(params: Dictionary) -> Dictionary:
+	var project = _api.project.current_project
+	if project == null:
+		return {"success": false, "error": "No active project"}
+
+	var layer_idx: int = _resolve_layer_index(params, project)
+	if layer_idx < 0 or layer_idx >= project.layers.size():
+		return {"success": false, "error": "Layer index out of bounds or not found: %s (available: 0..%d)" % [str(params.get("layer", layer_idx)), project.layers.size() - 1]}
+
+	var frame_res := _resolve_frame_indices(project, params, "", true)
+	if frame_res.error != "":
+		return {"success": false, "error": frame_res.error}
+
+	var include_alpha: bool = bool(params.get("include_alpha", false))
+	var include_empty_frames: bool = bool(params.get("include_empty_frames", false))
+	var min_alpha: float = clampf(float(params.get("min_alpha", 0.01)), 0.0, 1.0)
+	var max_pixels_per_frame: int = clampi(int(params.get("max_pixels_per_frame", 4096)), 1, 65536)
+
+	var color_filter := {}
+	var has_filter := false
+	if params.has("colors") and params["colors"] is Array and not params["colors"].is_empty():
+		has_filter = true
+		for raw_hex in params["colors"]:
+			var hs := str(raw_hex).strip_edges()
+			if Color.html_is_valid(hs):
+				var fc := Color.html(hs)
+				color_filter["#" + fc.to_html(include_alpha).to_lower()] = true
+
+	var layer_obj = project.layers[layer_idx]
+	var frame_indices: Array = frame_res.frames
+	var markers := {}
+	var total_markers := 0
+	var truncated_frames: Array[int] = []
+
+	for fi in frame_indices:
+		var cel = project.frames[fi].cels[layer_idx]
+		if cel == null or cel.get_class_name() != "PixelCel":
+			return {"success": false, "error": "Cel at [frame:%d, layer:%d] is not a PixelCel" % [fi, layer_idx]}
+
+		var img: Image = _cel_to_canvas_image(cel, project)
+		var used := img.get_used_rect()
+		var frame_map := {}
+		var frame_count := 0
+		var frame_truncated := false
+
+		if used.size.x > 0 and used.size.y > 0:
+			for y in range(used.position.y, used.end.y):
+				if frame_truncated:
+					break
+				for x in range(used.position.x, used.end.x):
+					var c := img.get_pixel(x, y)
+					if c.a >= min_alpha:
+						var hex := "#" + c.to_html(include_alpha).to_lower()
+						if has_filter and not color_filter.has(hex):
+							continue
+						if not frame_map.has(hex):
+							frame_map[hex] = []
+						frame_map[hex].append([x, y])
+						frame_count += 1
+						total_markers += 1
+						if frame_count >= max_pixels_per_frame:
+							frame_truncated = true
+							truncated_frames.append(fi)
+							break
+
+		if include_empty_frames or not frame_map.is_empty():
+			markers[str(fi)] = frame_map
+
 	return {
 		"success": true,
 		"data": {
-			"empty": false,
-			"total_opaque_pixels": fully_opaque,
-			"fully_opaque_pixels": fully_opaque,
-			"semi_transparent_pixels": semi_transparent,
-			"non_transparent_pixels": total_non_transparent,
-			"unique_color_count": color_map.size(),
-			"unique_colors": color_map.keys(),
-			"bounds": {
-				"x": used_rect.position.x,
-				"y": used_rect.position.y,
-				"width": used_rect.size.x,
-				"height": used_rect.size.y
-			},
-			"canvas_size": {"width": w, "height": h},
-			"stray_pixels": stray_pixels.slice(0, 50),
-			"stray_pixel_count": stray_pixels.size(),
-			"enclosed_holes": enclosed_holes,
-			"enclosed_hole_count": enclosed_holes.size(),
-			"frame": frame_idx,
-			"layer": target_layer
+			"layer": layer_idx,
+			"layer_name": str(layer_obj.name),
+			"layer_id": _get_or_create_layer_id(layer_obj),
+			"visible": bool(layer_obj.visible),
+			"frames_scanned": frame_indices,
+			"tag": str(frame_res.tag),
+			"total_markers": total_markers,
+			"truncated_frames": truncated_frames,
+			"markers": markers
 		}
 	}
 

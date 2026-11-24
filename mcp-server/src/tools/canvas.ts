@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sendCommand } from "../bridge/pixelorama_client.js";
-import { coerceInt } from "../utils/schema_helpers.js";
+import { coerceInt, coerceBool } from "../utils/schema_helpers.js";
 import { resolveSafeInputFile, resolveSafeOutputFile } from "../utils/path_guard.js";
 
 export function registerCanvasTools(server: McpServer): void {
@@ -155,20 +155,24 @@ export function registerCanvasTools(server: McpServer): void {
 
   server.tool(
     "close_canvas",
-    "Close an open canvas/project tab in Pixelorama by its index. Note: Pixelorama requires at least one canvas to remain open — attempting to close the only open canvas is blocked.",
+    "Close an open canvas/project tab in Pixelorama by its index. When closing the last remaining tab, automatically replaces it with a fresh blank 64×64 'untitled' canvas by default (pass replace_with_blank: false to block closing the last tab instead).",
     {
       index: coerceInt(0).optional().describe("Canvas index to close (defaults to currently active canvas)"),
+      replace_with_blank: coerceBool()
+        .default(true)
+        .describe("If true (default) and closing the only open canvas, opens a fresh blank 64×64 'untitled' canvas before closing; if false, blocks closing the last remaining canvas"),
     },
-    async ({ index }) => {
-      const params: Record<string, unknown> = {};
+    async ({ index, replace_with_blank }) => {
+      const params: Record<string, unknown> = { replace_with_blank };
       if (index !== undefined) params.index = index;
       const result = await sendCommand("close_canvas", params);
+      const replacedNote = result.data?.replaced_with_blank ? " (replaced with fresh blank 'untitled' canvas)" : "";
       return {
         content: [
           {
             type: "text" as const,
             text: result.success
-              ? `✅ Closed canvas [${result.data?.closed_index}] "${result.data?.closed_name}". Remaining canvases: ${result.data?.remaining_canvases} (active: [${result.data?.active_index}])`
+              ? `✅ Closed canvas [${result.data?.closed_index}] "${result.data?.closed_name}"${replacedNote}. Remaining canvases: ${result.data?.remaining_canvases} (active: [${result.data?.active_index}])`
               : `❌ ${result.error}`,
           },
         ],
