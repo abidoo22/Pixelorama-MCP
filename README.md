@@ -13,9 +13,9 @@
 [![Node.js](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org/)
 [![Tools](https://img.shields.io/badge/MCP%20tools-70%2B%20(106%20total)-blue)](docs/tool-reference.md)
 
-<img src="moonlit_sanctuary_3x.png" alt="Moonlit Sanctuary: a pixel art lakeside pagoda under a full moon, drawn by an AI inside Pixelorama" width="100%">
+<img src="celestial_astrolabe_shrine_1080p_3x.png" alt="Celestial Astrolabe Shrine: a pixel art lakeside shrine crowned with a glowing astrolabe beneath a cosmic twilight sky, drawn by an AI inside Pixelorama" width="100%">
 
-<sub><i>"Moonlit Sanctuary", painted live inside Pixelorama by an LLM via the Pixelorama-MCP toolset.</i></sub>
+<sub><i>"Celestial Astrolabe Shrine", painted live inside Pixelorama by an LLM via the Pixelorama-MCP toolset.</i></sub>
 
 </div>
 
@@ -66,48 +66,32 @@ Every asset below was created by an AI agent communicating with Pixelorama throu
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/examples/leviathan_dawn.png" alt="Celestial leviathan soaring through dawn clouds" width="100%"><br>
-      <b>🐋 Leviathan at Dawn</b><br><sub>Celestial leviathan soaring through dawn clouds</sub>
+      <img src="docs/examples/moonlit_sanctuary_3x.png" alt="Moonlit Sanctuary: a pixel art lakeside pagoda under a full moon" width="100%"><br>
+      <b>🌙 Moonlit Sanctuary</b><br><sub>Lakeside pagoda and water reflections under a full moon</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/examples/museum_gallery_2x.png" alt="Spotlighted museum hall with framed art and a sculpture" width="100%"><br>
-      <b>🏛️ Museum Gallery</b><br><sub>Spotlit hall with framed art and a marble bust</sub>
+      <img src="docs/examples/the_end_of_the_world_2x.png" alt="The End of the World: a lone traveler overlooking a ruined skyline and collapsed bridge at dusk" width="100%"><br>
+      <b>🌆 The End of the World</b><br><sub>Post-apocalyptic skyline and broken suspension bridge at dusk</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/examples/showcase_cyberpunk_banner.gif" alt="Animated cyberpunk city banner" width="100%"><br>
-      <b>🌆 Neo-Metropolis Overlook</b><br><sub>192×64 animated cyberpunk city and cyber-ronin</sub>
+      <img src="docs/examples/white_horse_meadow.gif" alt="Animated white horse in a grassy meadow" width="100%"><br>
+      <b>🐎 White Horse Meadow</b><br><sub>Animated pixel art white horse in a meadow</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/examples/showcase_astral_banner.gif" alt="Animated floating island with a levitating mana crystal" width="100%"><br>
-      <b>🌌 The Astral Drift</b><br><sub>192×64 floating island with a levitating mana crystal</sub>
+      <img src="docs/examples/blooming_flower.gif" alt="Animated pixel art flower blooming" width="100%"><br>
+      <b>🌸 Blooming Flower</b><br><sub>Animated flower bloom sequence</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/examples/Sinister_Wendigo_Walk.png" alt="8-frame wendigo walk cycle spritesheet" width="100%"><br>
-      <b>🦌 Sinister Wendigo Walk</b><br><sub>8-frame walk cycle spritesheet</sub>
+      <img src="docs/examples/ancient_warrior_hit_sheet_spritesheet.png" alt="8-frame ancient warrior sword strike spritesheet" width="100%"><br>
+      <b>⚔️ Ancient Warrior Attack</b><br><sub>8-frame sword slash spritesheet</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/examples/dungeon_tileset_4x.png" alt="Dungeon tileset with stone walls, water, lava, doors and spikes" width="100%"><br>
-      <b>🏰 Dungeon Tileset</b><br><sub>Stone walls, water, lava, doors, spikes, and props</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/examples/ts_labs.png" alt="Sci-fi lab tileset with consoles, containment tubes and server racks" width="100%"><br>
-      <b>🔬 Sci-Fi Lab Tileset</b><br><sub>Consoles, containment tubes, server racks, flooring</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/examples/dialog_box_2x.png" alt="Retro RPG dialogue box with corner ornaments" width="100%"><br>
-      <b>💬 Retro Dialog Box</b><br><sub>RPG dialogue frame with ornaments and a prompt cursor</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <img src="docs/examples/coin.png" alt="Golden coin with a 3D star and drop shadow" width="160"><br>
-      <b>🪙 Golden Coin</b><br><sub>Classic shaded 3D star coin with a drop shadow</sub>
+      <img src="docs/examples/slime_idle_spritesheet.png" alt="4-frame green slime idle animation spritesheet" width="100%"><br>
+      <b>🟢 Slime Idle</b><br><sub>4-frame squash-and-stretch idle spritesheet</sub>
     </td>
   </tr>
 </table>
