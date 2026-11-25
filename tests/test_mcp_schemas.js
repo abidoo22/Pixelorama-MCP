@@ -1,5 +1,5 @@
-import { fastFlatArraySchema, MAX_FLAT_PIXEL_ELEMENTS, layerHandleSchema, framesArraySchema } from './mcp-server/dist/utils/schema_helpers.js';
-import { createServer } from './mcp-server/dist/server.js';
+import { fastFlatArraySchema, MAX_FLAT_PIXEL_ELEMENTS, layerHandleSchema, framesArraySchema } from '../mcp-server/dist/utils/schema_helpers.js';
+import { createServer } from '../mcp-server/dist/server.js';
 
 let passed = 0;
 let failed = 0;

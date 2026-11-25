@@ -2,7 +2,7 @@
  * test_all_tools.js — Comprehensive verification suite for ALL 67 MCP Tools in Pixelorama-MCP.
  */
 
-import { createServer } from "./mcp-server/dist/server.js";
+import { createServer } from "../mcp-server/dist/server.js";
 import path from "path";
 import fs from "fs";
 

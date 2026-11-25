@@ -310,7 +310,7 @@ See the full [Tool Reference](docs/tool-reference.md) for argument tables and JS
 Contributions are warmly welcome! Whether you want to add new procedural drawing tools, improve Godot integration, or submit artwork prompts:
 
 1. Fork the repository and create a feature branch (`git checkout -b feature/awesome-tool`).
-2. Make your edits and ensure tests pass (`node test_all_fixes.js`).
+2. Make your edits and ensure tests pass (`node tests/test_all_fixes.js`).
 3. Submit a Pull Request with a clear description of the enhancement.
 
 ---

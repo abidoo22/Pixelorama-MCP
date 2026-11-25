@@ -8,7 +8,7 @@ import {
   resolveSafeDirectory,
   resolveSafeOutputFile,
   resolveSafeInputFile,
-} from "./mcp-server/dist/utils/path_guard.js";
+} from "../mcp-server/dist/utils/path_guard.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(`Assertion failed: ${msg}`);
